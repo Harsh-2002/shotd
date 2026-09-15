@@ -39,6 +39,8 @@ shotd update
 shotd uninstall
 ```
 
+Uninstall removes the LaunchAgent and binary but preserves your configuration and data for a future reinstall.
+
 Configuration and output files are retained.
 
 ## Build From Source

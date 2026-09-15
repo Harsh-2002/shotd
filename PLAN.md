@@ -3148,7 +3148,7 @@ The installer runs only for the logged-in GUI user. It downloads the matching ar
 
 The public installer uses POSIX `sh` syntax, fails clearly on unsupported Unix platforms, and currently installs only the Apple-silicon macOS artifact. It idempotently installs the user command path and zsh completion, updates the user's zsh login environment, and prints non-notarized launch guidance after installation or upgrade.
 
-If `config.json` is absent, it starts the minimal `shotd setup` onboarding flow. If it exists, installation is an upgrade and preserves configuration, state, Keychain credentials, logs, imported backgrounds, and output files.
+If `config.json` is absent, it starts the minimal `shotd setup` onboarding flow. If it exists and is valid, installation is an upgrade and preserves configuration, state, Keychain credentials, logs, imported backgrounds, and output files. An invalid preserved configuration enters interactive repair setup instead of aborting the reinstall.
 
 First-time interactive setup asks for the screenshot watch folder and finished-media output folder, offering safe `~/Pictures/shotd/...` defaults. It then explains the macOS Screenshot save-location setting and asks before installing the per-user LaunchAgent. Non-interactive setup uses explicit options or the defaults.
 
