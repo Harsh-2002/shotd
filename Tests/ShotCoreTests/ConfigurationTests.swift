@@ -38,5 +38,9 @@ final class ConfigurationTests: XCTestCase {
 
     func testReleaseAssetNameIncludesVersionAndArchitecture() {
         XCTAssertEqual(BuildInfo.assetName(for: "v2026.09.15", architecture: "arm64"), "shotd-v2026.09.15-macos-arm64.zip")
+        XCTAssertEqual(
+            BuildInfo.binaryChecksumAssetName(for: "v2026.09.15", architecture: "arm64"),
+            "shotd-v2026.09.15-macos-arm64.binary.sha256"
+        )
     }
 }

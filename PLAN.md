@@ -3134,7 +3134,7 @@ The daemon should become something the user eventually forgets is running.
 
 # 85. Distribution And Updates
 
-`shotd` is distributed as an Apple-silicon (`arm64`) release archive. Versions use the immutable calendar tag format:
+`shotd` is distributed as an Apple-silicon (`arm64`) release archive. Versions use the calendar tag format:
 
 ```text
 vYYYY.MM.DD
@@ -3158,13 +3158,13 @@ Setup is re-runnable and uses color only when attached to a terminal. Pasted she
 
 The CLI provides native zsh completion output through `shotd completions zsh`; the public installer configures it automatically.
 
-`shotd update --check` reports the latest GitHub Release. `shotd update` verifies the archive checksum before it replaces anything. When Developer ID signing is available, it also requires the downloaded binary to have the same Developer ID team as the installed binary.
+`shotd update --check` reports the latest GitHub Release. Same-day rebuilt releases retain the calendar tag and are detected by comparing the published binary checksum with the installed executable. `shotd update` verifies both the archive checksum and published binary checksum before it replaces anything. When Developer ID signing is available, it also requires the downloaded binary to have the same Developer ID team as the installed binary.
 
 No installer or updater may use `sudo`, change a shell profile, write a system-wide binary path, or install a LaunchDaemon.
 
 ## Release Lifecycle
 
-Release publication is initiated only by manually pushing a `vYYYY.MM.DD` tag. The GitHub Actions workflow builds and validates the Apple-silicon archive, applies an ad-hoc signature, publishes the new release and its `SHA256SUMS`, then retires every older published GitHub Release.
+Release publication is initiated only by manually pushing a `vYYYY.MM.DD` tag. The GitHub Actions workflow builds and validates the Apple-silicon archive, applies an ad-hoc signature, publishes the release with archive and binary checksums, then retires every older published GitHub Release. A corrected build may republish the current day's tag; clients distinguish it from the installed build by binary checksum.
 
 There is exactly one active published release at a time. Older Git tags remain for source history, but their GitHub Release pages and downloadable assets are deleted only after the new release is successfully published. A failed build, signing, notarization, or publication must leave the existing active release untouched.
 

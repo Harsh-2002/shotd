@@ -13,6 +13,10 @@ public enum BuildInfo {
         "shotd-\(version)-macos-\(architecture).zip"
     }
 
+    public static func binaryChecksumAssetName(for version: String, architecture: String) -> String {
+        "shotd-\(version)-macos-\(architecture).binary.sha256"
+    }
+
     private static func versionParts(_ value: String) -> [Int]? {
         let parts = value.drop(while: { $0 == "v" }).split(separator: ".")
         guard parts.count == 3,

@@ -17,10 +17,14 @@ public enum ReleaseUpdater {
         enum CodingKeys: String, CodingKey { case name; case downloadURL = "browser_download_url" }
     }
 
-    public static func check() async throws -> String {
+    public static func check(paths: ApplicationPaths) async throws -> String {
         let release = try await latestRelease()
         if BuildInfo.isNewer(release.tagName) {
             return "Update available: \(release.tagName) (installed: \(BuildInfo.version))"
+        }
+        if release.tagName == BuildInfo.version,
+           try await installedBinaryDiffers(from: release, paths: paths) {
+            return "Update available: refreshed \(release.tagName) build"
         }
         return "shotd \(BuildInfo.version) is up to date"
     }
@@ -30,14 +34,18 @@ public enum ReleaseUpdater {
             throw ShotdError.filesystem("shotd is not installed. Run the installer or `shotd install` first.")
         }
         let release = try await latestRelease()
-        guard BuildInfo.isNewer(release.tagName) else { return "shotd \(BuildInfo.version) is up to date" }
-
         let architecture = try currentArchitecture()
         let archiveName = BuildInfo.assetName(for: release.tagName, architecture: architecture)
         guard let archive = release.assets.first(where: { $0.name == archiveName }),
               let checksums = release.assets.first(where: { $0.name == "SHA256SUMS" }) else {
             throw ShotdError.unsupported("Release \(release.tagName) does not provide a verified macOS \(architecture) download.")
         }
+        let isNewer = BuildInfo.isNewer(release.tagName)
+        var isRefreshed = false
+        if release.tagName == BuildInfo.version {
+            isRefreshed = try await installedBinaryDiffers(from: release, paths: paths, architecture: architecture)
+        }
+        guard isNewer || isRefreshed else { return "shotd \(BuildInfo.version) is up to date" }
 
         let checksumText = try await text(from: checksums.downloadURL)
         guard let expectedChecksum = checksum(for: archiveName, in: checksumText) else {
@@ -59,6 +67,10 @@ public enum ReleaseUpdater {
         let candidate = unpacked.appending(path: "shotd")
         guard FileManager.default.isExecutableFile(atPath: candidate.path) else {
             throw ShotdError.processing("Release archive does not contain an executable shotd binary.")
+        }
+        if let expectedBinaryChecksum = try await binaryChecksum(for: release, architecture: architecture),
+           try sha256(of: candidate) != expectedBinaryChecksum {
+            throw ShotdError.processing("Downloaded update binary failed SHA-256 verification.")
         }
         try verifySignedUpgrade(current: installedBinary(paths: paths), candidate: candidate)
         try LaunchAgent.install(paths: paths, executable: candidate)
@@ -95,6 +107,28 @@ public enum ReleaseUpdater {
             throw ShotdError.storage("Unable to download the shotd update.")
         }
         try FileManager.default.moveItem(at: temporary, to: destination)
+    }
+
+    private static func installedBinaryDiffers(
+        from release: Release,
+        paths: ApplicationPaths,
+        architecture: String? = nil
+    ) async throws -> Bool {
+        let architecture = try architecture ?? currentArchitecture()
+        guard let expected = try await binaryChecksum(for: release, architecture: architecture) else { return false }
+        let installed = installedBinary(paths: paths)
+        guard FileManager.default.fileExists(atPath: installed.path) else { return true }
+        return try sha256(of: installed) != expected
+    }
+
+    private static func binaryChecksum(for release: Release, architecture: String) async throws -> String? {
+        let name = BuildInfo.binaryChecksumAssetName(for: release.tagName, architecture: architecture)
+        guard let asset = release.assets.first(where: { $0.name == name }) else { return nil }
+        let checksum = try await text(from: asset.downloadURL).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard checksum.count == 64, checksum.allSatisfy(\.isHexDigit) else {
+            throw ShotdError.processing("Release \(release.tagName) has an invalid binary checksum.")
+        }
+        return checksum
     }
 
     private static func checksum(for name: String, in checksums: String) -> String? {

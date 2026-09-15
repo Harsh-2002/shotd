@@ -113,7 +113,7 @@ public struct CommandRunner: Sendable {
             case _ where arguments.first == "setup":
                 try await setup(paths: paths, loader: loader)
             case ["update", "--check"]:
-                print(try await ReleaseUpdater.check())
+                print(try await ReleaseUpdater.check(paths: paths))
             case ["update"]:
                 print(try await ReleaseUpdater.update(paths: paths))
             case _ where arguments.count == 3 && arguments[0] == "storage" && arguments[1] == "set-credentials":

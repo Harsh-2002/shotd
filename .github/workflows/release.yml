@@ -48,16 +48,20 @@ jobs:
         run: Packaging/release.sh
       - name: Create checksums
         working-directory: dist
-        run: shasum -a 256 shotd-*.zip > SHA256SUMS
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          shasum -a 256 shotd-*.zip > SHA256SUMS
+          shasum -a 256 package/shotd | cut -d ' ' -f 1 > "shotd-$VERSION-macos-arm64.binary.sha256"
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ github.ref_name }}
         run: |
           if gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$VERSION" "dist/shotd-$VERSION-macos-arm64.zip" dist/SHA256SUMS --repo "$GITHUB_REPOSITORY" --clobber
+            gh release upload "$VERSION" "dist/shotd-$VERSION-macos-arm64.zip" "dist/shotd-$VERSION-macos-arm64.binary.sha256" dist/SHA256SUMS --repo "$GITHUB_REPOSITORY" --clobber
           else
-            gh release create "$VERSION" "dist/shotd-$VERSION-macos-arm64.zip" dist/SHA256SUMS --repo "$GITHUB_REPOSITORY" --title "shotd $VERSION" --generate-notes
+            gh release create "$VERSION" "dist/shotd-$VERSION-macos-arm64.zip" "dist/shotd-$VERSION-macos-arm64.binary.sha256" dist/SHA256SUMS --repo "$GITHUB_REPOSITORY" --title "shotd $VERSION" --generate-notes
           fi
       - name: Retire previous published releases
         env:
