@@ -3127,3 +3127,25 @@ DONE
 ```
 
 The daemon should become something the user eventually forgets is running.
+
+---
+
+# 85. Distribution And Updates
+
+`shotd` is distributed as a Developer ID-signed, notarized Apple-silicon (`arm64`) release archive. Versions use the immutable calendar tag format:
+
+```text
+vYYYY.MM.DD
+```
+
+The installer runs only for the logged-in GUI user. It downloads the matching architecture, verifies `SHA256SUMS` and the code signature, then stages and atomically replaces:
+
+```text
+~/Library/Application Support/shotd/bin/shotd
+```
+
+If `config.json` is absent, it starts the minimal `shotd setup` onboarding flow. If it exists, installation is an upgrade and preserves configuration, state, Keychain credentials, logs, imported backgrounds, and output files.
+
+`shotd update --check` reports the latest GitHub Release. `shotd update` verifies the archive checksum and requires the downloaded binary to have the same Developer ID team as the installed binary before it replaces anything.
+
+No installer or updater may use `sudo`, change a shell profile, write a system-wide binary path, or install a LaunchDaemon.

@@ -48,9 +48,7 @@ public actor Daemon {
             }
         }
 
-        let inboxWatcher = DirectoryWatcher(directory: inbox) { [weak self] files in
-            Task { await self?.enqueue(files) }
-        }
+        let inboxWatcher = makeInboxWatcher(directory: inbox)
         let configurationFile = paths.configuration.standardizedFileURL
         let configWatcher = DirectoryWatcher(directory: paths.applicationSupport) { [weak self] files in
             guard files.contains(where: { $0.standardizedFileURL == configurationFile }) else { return }
@@ -93,9 +91,27 @@ public actor Daemon {
 
     private func reloadConfiguration() async {
         do {
+            guard running else { return }
             let loaded = try await loader.load()
+            let inbox = paths.expandUserPath(loaded.watch.directory).standardizedFileURL
+            let output = paths.expandUserPath(loaded.output.directory).standardizedFileURL
+            try FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+
+            let currentInbox = configuration.map { paths.expandUserPath($0.watch.directory).standardizedFileURL }
+            if inbox != currentInbox {
+                let replacement = makeInboxWatcher(directory: inbox)
+                try replacement.start()
+                let startupFiles = try replacement.currentFiles()
+                let previous = inboxWatcher
+                inboxWatcher = replacement
+                configuration = loaded
+                previous?.stop()
+                await enqueueStartupFiles(startupFiles, configuration: loaded)
+            } else {
+                configuration = loaded
+            }
             await prewarmBackground(configuration: loaded)
-            configuration = loaded
             Log.info("Configuration reloaded")
         } catch {
             // The active configuration remains untouched after an invalid reload.
@@ -106,6 +122,12 @@ public actor Daemon {
     private func retryDueUploads() async {
         guard running, let configuration else { return }
         await storageDelivery.retryDueUploads(configuration: configuration.storage)
+    }
+
+    private func makeInboxWatcher(directory: URL) -> DirectoryWatcher {
+        DirectoryWatcher(directory: directory) { [weak self] files in
+            Task { await self?.enqueue(files) }
+        }
     }
 
     private func prewarmBackground(configuration: ShotdConfiguration) async {
@@ -182,7 +204,7 @@ public actor Daemon {
                 let output = OutputManager(directory: paths.expandUserPath(configuration.output.directory))
                 let key = output.objectKey(for: source, kind: .image, format: result.format, prefix: configuration.storage?.paths.images ?? "screenshots")
                 try await tracker.processed(.init(fingerprint: stableFingerprint, outputPath: result.outputURL.path, objectKey: key))
-                scheduleDelivery(file: result.outputURL, source: source, objectKey: key, contentType: result.format.mimeType, configuration: configuration)
+                scheduleDelivery(file: result.outputURL, source: source, fingerprint: stableFingerprint, objectKey: key, contentType: result.format.mimeType, configuration: configuration)
                 return
             case .video:
                 pendingVideos.append(.init(source: source, configuration: configuration, fingerprint: stableFingerprint))
@@ -212,17 +234,18 @@ public actor Daemon {
             let output = OutputManager(directory: paths.expandUserPath(job.configuration.output.directory))
             let key = output.objectKey(for: job.source, kind: .video, format: result.format, prefix: job.configuration.storage?.paths.videos ?? "recordings")
             try await tracker.processed(.init(fingerprint: job.fingerprint, outputPath: result.outputURL.path, objectKey: key))
-            scheduleDelivery(file: result.outputURL, source: job.source, objectKey: key, contentType: result.format.mimeType, configuration: job.configuration)
+            scheduleDelivery(file: result.outputURL, source: job.source, fingerprint: job.fingerprint, objectKey: key, contentType: result.format.mimeType, configuration: job.configuration)
         } catch {
             await tracker.failed(job.fingerprint)
             Log.processing.error("Failed to process recording \(job.source.lastPathComponent, privacy: .private): \(error.localizedDescription, privacy: .public)")
         }
     }
 
-    private func scheduleDelivery(file: URL, source: URL, objectKey: String, contentType: String, configuration: ShotdConfiguration) {
+    private func scheduleDelivery(file: URL, source: URL, fingerprint: SourceFingerprint, objectKey: String, contentType: String, configuration: ShotdConfiguration) {
         Task { [storageDelivery] in
             let delivery = await storageDelivery.deliver(file: file, objectKey: objectKey, contentType: contentType, configuration: configuration.storage)
             if configuration.source.retention == .deleteAfterSuccess && (!configuration.source.deleteRequiresUpload || delivery.uploaded) {
+                guard (try? FileStabilizer().fingerprint(source)) == fingerprint else { return }
                 try? FileManager.default.removeItem(at: source)
             }
         }

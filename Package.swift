@@ -23,6 +23,7 @@ let package = Package(
                 .linkedFramework("CoreImage"),
                 .linkedFramework("CoreMedia"),
                 .linkedFramework("CoreVideo"),
+                .linkedFramework("CryptoKit"),
                 .linkedFramework("ImageIO"),
                 .linkedFramework("Security"),
                 .linkedFramework("VideoToolbox")

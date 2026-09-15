@@ -1,18 +1,27 @@
+import Darwin
 import Foundation
 
 public enum LaunchAgent {
     public static let label = "io.shotd"
 
     public static func install(paths: ApplicationPaths, executable: URL) throws {
+        guard getuid() != 0 else {
+            throw ShotdError.invalidArguments("shotd must be installed by the logged-in macOS user, not with sudo.")
+        }
         try paths.createRequiredDirectories()
         let fileManager = FileManager.default
+        let source = executable.standardizedFileURL.resolvingSymlinksInPath()
+        guard fileManager.isExecutableFile(atPath: source.path) else {
+            throw ShotdError.filesystem("The shotd executable is missing or is not executable: \(source.path)")
+        }
         let binaryDirectory = paths.applicationSupport.appending(path: "bin", directoryHint: .isDirectory)
         try fileManager.createDirectory(at: binaryDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let binary = binaryDirectory.appending(path: "shotd")
-        if binary.standardizedFileURL != executable.standardizedFileURL {
-            try? fileManager.removeItem(at: binary)
-            try fileManager.copyItem(at: executable, to: binary)
-            try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: binary.path)
+        let replacementNeeded = binary.standardizedFileURL.resolvingSymlinksInPath() != source
+        let staged = binaryDirectory.appending(path: ".shotd-\(UUID().uuidString).tmp")
+        if replacementNeeded {
+            try fileManager.copyItem(at: source, to: staged)
+            try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: staged.path)
         }
         try fileManager.createDirectory(at: paths.launchAgentsDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let plist = plistURL(paths: paths)
@@ -21,15 +30,37 @@ public enum LaunchAgent {
             "ProgramArguments": [binary.path, "run"],
             "RunAtLoad": true,
             "KeepAlive": true,
+            "ThrottleInterval": 10,
             "ProcessType": "Background",
             "StandardOutPath": paths.logsDirectory.appending(path: "daemon.log").path,
             "StandardErrorPath": paths.logsDirectory.appending(path: "daemon-error.log").path
         ]
         let data = try PropertyListSerialization.data(fromPropertyList: content, format: .xml, options: 0)
-        try AtomicWriter.write(data, to: plist)
         _ = try runLaunchctl(["bootout", domain(paths), plist.path], allowingFailure: true)
-        let result = try runLaunchctl(["bootstrap", domain(paths), plist.path])
-        guard result.status == 0 else { throw ShotdError.filesystem("Unable to install LaunchAgent: \(result.output)") }
+        let backup = binaryDirectory.appending(path: "shotd.previous")
+        do {
+            if replacementNeeded {
+                try? fileManager.removeItem(at: backup)
+                if fileManager.fileExists(atPath: binary.path) {
+                    _ = try fileManager.replaceItemAt(binary, withItemAt: staged, backupItemName: backup.lastPathComponent, options: [])
+                } else {
+                    try fileManager.moveItem(at: staged, to: binary)
+                }
+            }
+            try AtomicWriter.write(data, to: plist)
+            try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: plist.path)
+            let result = try runLaunchctl(["bootstrap", domain(paths), plist.path])
+            guard result.status == 0 else { throw ShotdError.filesystem("Unable to install LaunchAgent: \(result.output)") }
+            try? fileManager.removeItem(at: backup)
+        } catch {
+            try? fileManager.removeItem(at: staged)
+            if fileManager.fileExists(atPath: backup.path) {
+                try? fileManager.removeItem(at: binary)
+                try? fileManager.moveItem(at: backup, to: binary)
+                _ = try? runLaunchctl(["bootstrap", domain(paths), plist.path], allowingFailure: true)
+            }
+            throw error
+        }
     }
 
     public static func uninstall(paths: ApplicationPaths) throws {

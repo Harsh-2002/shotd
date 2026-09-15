@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 public enum ExitCode: Int32 { case success = 0, failure = 1, usage = 2 }
@@ -46,7 +47,7 @@ public struct CommandRunner: Sendable {
                 Log.info("Background imported to \(destination.path)")
             case ["install"]:
                 _ = try await loader.loadOrCreateDefault()
-                try LaunchAgent.install(paths: paths, executable: URL(filePath: CommandLine.arguments[0]))
+                try LaunchAgent.install(paths: paths, executable: try invokedExecutable())
                 Log.info("LaunchAgent installed")
             case ["uninstall"]:
                 try LaunchAgent.uninstall(paths: paths)
@@ -102,7 +103,13 @@ public struct CommandRunner: Sendable {
                 await daemon.waitForever()
                 signals.cancel()
             case ["version"]:
-                print("shotd 0.1.0")
+                print("shotd \(BuildInfo.version)")
+            case _ where arguments.first == "setup":
+                try await setup(paths: paths, loader: loader)
+            case ["update", "--check"]:
+                print(try await ReleaseUpdater.check())
+            case ["update"]:
+                print(try await ReleaseUpdater.update(paths: paths))
             case _ where arguments.count == 3 && arguments[0] == "storage" && arguments[1] == "set-credentials":
                 let name = arguments[2]
                 let environment = ProcessInfo.processInfo.environment
@@ -182,16 +189,108 @@ public struct CommandRunner: Sendable {
         }
     }
 
+    private func setup(paths: ApplicationPaths, loader: ConfigLoader) async throws {
+        var startAfterSetup = true
+        var acceptDefaults = false
+        var watchDirectory: String?
+        var outputDirectory: String?
+        var index = 1
+        while index < arguments.count {
+            switch arguments[index] {
+            case "--yes":
+                acceptDefaults = true
+            case "--no-start":
+                startAfterSetup = false
+            case "--watch-directory", "--output-directory":
+                guard index + 1 < arguments.count else {
+                    throw ShotdError.invalidArguments("\(arguments[index]) requires a directory path.")
+                }
+                if arguments[index] == "--watch-directory" {
+                    watchDirectory = arguments[index + 1]
+                } else {
+                    outputDirectory = arguments[index + 1]
+                }
+                index += 1
+            default:
+                throw ShotdError.invalidArguments("Unknown setup option: \(arguments[index])")
+            }
+            index += 1
+        }
+
+        let exists = FileManager.default.fileExists(atPath: paths.configuration.path)
+        var configuration = try await loader.loadOrCreateDefault()
+        if exists && (watchDirectory != nil || outputDirectory != nil) {
+            throw ShotdError.invalidArguments("shotd is already configured. Edit \(paths.configuration.path) to change its directories.")
+        }
+        if !exists {
+            if let watchDirectory { configuration.watch.directory = watchDirectory }
+            if let outputDirectory { configuration.output.directory = outputDirectory }
+            try await loader.write(configuration)
+        }
+
+        let watch = paths.expandUserPath(configuration.watch.directory).path
+        let output = paths.expandUserPath(configuration.output.directory).path
+        print("""
+
+        shotd setup
+        -----------
+        Your screenshots will be ready to paste automatically.
+
+        Watch folder: \(watch)
+        Output folder: \(output)
+
+        In macOS, press Shift-Command-5, choose Options, then set Save to this watch folder.
+        Keep captures in Pictures when possible. Desktop, Documents, Downloads, external drives, and network folders can require additional macOS permission.
+        """)
+
+        guard startAfterSetup else {
+            print("Setup is ready. Run `shotd install` when you want shotd to start automatically.")
+            return
+        }
+        if !acceptDefaults {
+            guard isatty(STDIN_FILENO) == 1 else {
+                throw ShotdError.invalidArguments("Run `shotd setup --yes` to install non-interactively.")
+            }
+            let answer = try SecureTerminalInput.read(prompt: "Start shotd automatically now? [Y/n] ", secret: false, allowEmpty: true)
+            if !answer.isEmpty, !["y", "yes"].contains(answer.lowercased()) {
+                print("Setup is ready. Run `shotd install` when you want shotd to start automatically.")
+                return
+            }
+        }
+        try LaunchAgent.install(paths: paths, executable: try invokedExecutable())
+        Log.info("shotd is ready. Run `shotd doctor` any time to check its setup.")
+    }
+
+    private func invokedExecutable() throws -> URL {
+        let invocation = CommandLine.arguments[0]
+        let fileManager = FileManager.default
+        let candidate: URL?
+        if invocation.contains("/") {
+            candidate = invocation.hasPrefix("/")
+                ? URL(filePath: invocation)
+                : URL(filePath: fileManager.currentDirectoryPath).appending(path: invocation)
+        } else {
+            candidate = ProcessInfo.processInfo.environment["PATH"]?.split(separator: ":").lazy
+                .map { URL(filePath: String($0)).appending(path: invocation) }
+                .first(where: { fileManager.isExecutableFile(atPath: $0.path) })
+        }
+        guard let candidate, fileManager.isExecutableFile(atPath: candidate.path) else {
+            throw ShotdError.filesystem("Unable to locate the running shotd executable.")
+        }
+        return candidate.standardizedFileURL.resolvingSymlinksInPath()
+    }
+
     private static let help = """
     Usage: shotd <command>
 
+      setup [--yes] [--no-start] [--watch-directory <path>] [--output-directory <path>]
       install | uninstall | start | stop | restart | status
       run | process <file>
       config path | config validate
       background import <file>
       storage set-credentials <name> | storage set-development-credentials
       storage test | storage multipart-test
-      codecs | doctor | version
+      codecs | doctor | update [--check] | version
     """
 }
 
