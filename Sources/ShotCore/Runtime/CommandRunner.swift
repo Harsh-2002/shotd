@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-public enum ExitCode: Int32 { case success = 0, failure = 1, usage = 2 }
+public enum ExitCode: Int32, Sendable { case success = 0, failure = 1, usage = 2 }
 
 public struct CommandRunner: Sendable {
     private let arguments: [String]
