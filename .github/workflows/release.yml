@@ -15,12 +15,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Import Developer ID certificate
-        if: ${{ secrets.DEVELOPER_ID_APPLICATION_P12 != '' }}
         env:
           CERTIFICATE_P12: ${{ secrets.DEVELOPER_ID_APPLICATION_P12 }}
           CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_APPLICATION_P12_PASSWORD }}
           KEYCHAIN_PASSWORD: ${{ github.run_id }}
         run: |
+          if [[ -z "$CERTIFICATE_P12" ]]; then
+            echo "Developer ID certificate not configured; using ad-hoc signing."
+            exit 0
+          fi
           security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
           security set-keychain-settings -lut 21600 build.keychain
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
