@@ -7,8 +7,10 @@ public enum ConfigValidator {
         }
         try validateDirectory(configuration.watch.directory, name: "watch.directory", paths: paths)
         try validateDirectory(configuration.output.directory, name: "output.directory", paths: paths)
-        guard paths.expandUserPath(configuration.watch.directory).standardizedFileURL != paths.expandUserPath(configuration.output.directory).standardizedFileURL else {
-            throw ShotdError.invalidConfiguration("watch.directory and output.directory must be different.")
+        let watchDirectory = paths.expandUserPath(configuration.watch.directory).standardizedFileURL
+        let outputDirectory = paths.expandUserPath(configuration.output.directory).standardizedFileURL
+        guard !overlap(watchDirectory, outputDirectory) else {
+            throw ShotdError.invalidConfiguration("watch.directory and output.directory must not contain one another.")
         }
         guard (0...1).contains(configuration.layout.paddingPercent) else {
             throw ShotdError.invalidConfiguration("layout.paddingPercent must be between 0 and 1.")
@@ -51,6 +53,12 @@ public enum ConfigValidator {
         guard !value.isEmpty, paths.expandUserPath(value).path.hasPrefix(paths.home.path) else {
             throw ShotdError.invalidConfiguration("\(name) must be a non-empty path inside the current user's home directory.")
         }
+    }
+
+    private static func overlap(_ first: URL, _ second: URL) -> Bool {
+        let firstPath = first.path.hasSuffix("/") ? first.path : first.path + "/"
+        let secondPath = second.path.hasSuffix("/") ? second.path : second.path + "/"
+        return first == second || firstPath.hasPrefix(secondPath) || secondPath.hasPrefix(firstPath)
     }
 
     private static func validate(background: BackgroundConfiguration, paths: ApplicationPaths, allowDesktop: Bool) throws {

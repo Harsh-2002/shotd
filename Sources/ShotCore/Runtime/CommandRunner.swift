@@ -106,6 +106,10 @@ public struct CommandRunner: Sendable {
                 print("shotd \(BuildInfo.version)")
             case ["completions", "zsh"]:
                 print(Self.zshCompletion)
+            case ["logs"]:
+                try showLogs(paths: paths, follow: false)
+            case ["logs", "--follow"]:
+                try showLogs(paths: paths, follow: true)
             case _ where arguments.first == "setup":
                 try await setup(paths: paths, loader: loader)
             case ["update", "--check"]:
@@ -208,9 +212,9 @@ public struct CommandRunner: Sendable {
                     throw ShotdError.invalidArguments("\(arguments[index]) requires a directory path.")
                 }
                 if arguments[index] == "--watch-directory" {
-                    watchDirectory = arguments[index + 1]
+                    watchDirectory = normalizedPath(arguments[index + 1])
                 } else {
-                    outputDirectory = arguments[index + 1]
+                    outputDirectory = normalizedPath(arguments[index + 1])
                 }
                 index += 1
             default:
@@ -220,41 +224,43 @@ public struct CommandRunner: Sendable {
         }
 
         let exists = FileManager.default.fileExists(atPath: paths.configuration.path)
-        var configuration = try await loader.loadOrCreateDefault()
-        if exists && (watchDirectory != nil || outputDirectory != nil) {
-            throw ShotdError.invalidArguments("shotd is already configured. Edit \(paths.configuration.path) to change its directories.")
-        }
-        if !exists {
-            if let watchDirectory { configuration.watch.directory = watchDirectory }
-            if let outputDirectory { configuration.output.directory = outputDirectory }
-            if !acceptDefaults, isatty(STDIN_FILENO) == 1 {
-                print("\nWelcome to shotd. Press Return to keep a suggested folder.")
-                if watchDirectory == nil {
-                    let answer = try SecureTerminalInput.read(prompt: "Where should macOS save screenshots? [\(configuration.watch.directory)] ", secret: false, allowEmpty: true)
-                    if !answer.isEmpty { configuration.watch.directory = answer }
-                }
-                if outputDirectory == nil {
-                    let answer = try SecureTerminalInput.read(prompt: "Where should shotd save finished media? [\(configuration.output.directory)] ", secret: false, allowEmpty: true)
-                    if !answer.isEmpty { configuration.output.directory = answer }
-                }
+        var configuration = try await (exists ? loader.loadUnvalidated() : ShotdConfiguration())
+        if let watchDirectory { configuration.watch.directory = watchDirectory }
+        if let outputDirectory { configuration.output.directory = outputDirectory }
+        if !acceptDefaults, isatty(STDIN_FILENO) == 1 {
+            print("\n\(styled("SHOTD SETUP", code: "1;36"))")
+            print(exists ? "Update your setup. Press Return to keep each value." : "A few choices, then screenshots are ready to paste.")
+            if watchDirectory == nil {
+                let answer = try SecureTerminalInput.read(prompt: styled("Screenshot folder", code: "36") + " [\(configuration.watch.directory)]: ", secret: false, allowEmpty: true)
+                if !answer.isEmpty { configuration.watch.directory = normalizedPath(answer) }
             }
-            try await loader.write(configuration)
+            if outputDirectory == nil {
+                let answer = try SecureTerminalInput.read(prompt: styled("Finished media folder", code: "36") + " [\(configuration.output.directory)]: ", secret: false, allowEmpty: true)
+                if !answer.isEmpty { configuration.output.directory = normalizedPath(answer) }
+            }
+            let replacing = configuration.source.retention == .replaceAfterSuccess
+            let prompt = replacing ? "Replace original screenshots? [Y/n]: " : "Replace original screenshots? [y/N]: "
+            let answer = try SecureTerminalInput.read(prompt: styled(prompt, code: "36"), secret: false, allowEmpty: true)
+            if !answer.isEmpty {
+                configuration.source.retention = ["y", "yes"].contains(answer.lowercased()) ? .replaceAfterSuccess : .keep
+            }
         }
+        try await loader.write(configuration)
 
         let watch = paths.expandUserPath(configuration.watch.directory).path
         let output = paths.expandUserPath(configuration.output.directory).path
-        print("""
-
-        shotd setup
-        -----------
-        Your screenshots will be ready to paste automatically.
-
-        Watch folder: \(watch)
-        Output folder: \(output)
-
-        In macOS, press Shift-Command-5, choose Options, then set Save to this watch folder.
-        Keep captures in Pictures when possible. Desktop, Documents, Downloads, external drives, and network folders can require additional macOS permission.
-        """)
+        print("\n\(styled("Setup ready", code: "1;32"))")
+        print("  Screenshots: \(watch)")
+        print("  Finished:    \(output)")
+        let retentionDescription: String
+        switch configuration.source.retention {
+        case .keep: retentionDescription = "keep"
+        case .deleteAfterSuccess: retentionDescription = "delete after delivery"
+        case .replaceAfterSuccess: retentionDescription = "replace safely"
+        }
+        print("  Originals:   \(retentionDescription)")
+        print("\nPress Shift-Command-5, choose Options, then set Save to the screenshot folder above.")
+        print("If your desktop wallpaper is stored in Downloads, macOS may ask once for folder access.")
 
         guard startAfterSetup else {
             print("Setup is ready. Run `shotd install` when you want shotd to start automatically.")
@@ -272,6 +278,31 @@ public struct CommandRunner: Sendable {
         }
         try LaunchAgent.install(paths: paths, executable: try invokedExecutable())
         Log.info("shotd is ready. Run `shotd doctor` any time to check its setup.")
+    }
+
+    private func showLogs(paths: ApplicationPaths, follow: Bool) throws {
+        let files = [paths.logsDirectory.appending(path: "daemon.log"), paths.logsDirectory.appending(path: "daemon-error.log")]
+        try FileManager.default.createDirectory(at: paths.logsDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        for file in files where !FileManager.default.fileExists(atPath: file.path) {
+            _ = FileManager.default.createFile(atPath: file.path, contents: nil, attributes: [.posixPermissions: 0o600])
+        }
+        let process = Process()
+        process.executableURL = URL(filePath: "/usr/bin/tail")
+        process.arguments = ["-n", "50"] + (follow ? ["-F"] : []) + files.map(\.path)
+        process.standardOutput = FileHandle.standardOutput
+        process.standardError = FileHandle.standardError
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { throw ShotdError.filesystem("Unable to read shotd logs.") }
+    }
+
+    private func normalizedPath(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\\ ", with: " ").replacingOccurrences(of: "\\~", with: "~")
+    }
+
+    private func styled(_ value: String, code: String) -> String {
+        guard isatty(STDOUT_FILENO) == 1, ProcessInfo.processInfo.environment["NO_COLOR"] == nil else { return value }
+        return "\u{001B}[\(code)m\(value)\u{001B}[0m"
     }
 
     private func invokedExecutable() throws -> URL {
@@ -304,6 +335,7 @@ public struct CommandRunner: Sendable {
       storage set-credentials <name> | storage set-development-credentials
       storage test | storage multipart-test
       codecs | doctor | update [--check] | version
+      logs [--follow]
       completions zsh
     """
 
@@ -327,6 +359,7 @@ public struct CommandRunner: Sendable {
         'storage:manage S3 storage'
         'codecs:list image codecs'
         'doctor:check the installation'
+        'logs:show recent processing logs'
         'update:check for or install updates'
         'version:show the installed version'
         'completions:generate shell completions'
@@ -344,11 +377,10 @@ public struct CommandRunner: Sendable {
         background) _arguments '1:command:(import)' '2:image file:_files' ;;
         storage) _values 'command' set-credentials set-development-credentials test multipart-test ;;
         update) _arguments '--check[check without installing]' ;;
+        logs) _arguments '--follow[keep showing new log entries]' ;;
         completions) _values 'shell' zsh ;;
       esac
     }
-
-    _shotd "$@"
     """
 }
 

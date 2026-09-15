@@ -24,6 +24,12 @@ public actor ConfigLoader {
     }
 
     public func load() throws -> ShotdConfiguration {
+        let configuration = try loadUnvalidated()
+        try ConfigValidator.validate(configuration, paths: paths)
+        return configuration
+    }
+
+    public func loadUnvalidated() throws -> ShotdConfiguration {
         let data = try Data(contentsOf: paths.configuration)
         let configuration: ShotdConfiguration
         do {
@@ -31,7 +37,6 @@ public actor ConfigLoader {
         } catch {
             throw ShotdError.invalidConfiguration("Unable to decode \(paths.configuration.path): \(error.localizedDescription)")
         }
-        try ConfigValidator.validate(configuration, paths: paths)
         return configuration
     }
 

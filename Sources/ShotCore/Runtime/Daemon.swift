@@ -198,13 +198,24 @@ public actor Daemon {
             guard try await tracker.shouldProcess(stableFingerprint) else { return }
             switch try await MediaInspector.inspect(at: source) {
             case .image:
+                var processingConfiguration = configuration
+                if configuration.source.retention == .replaceAfterSuccess {
+                    processingConfiguration.image.format = .preserve
+                    processingConfiguration.image.compression = nil
+                }
                 let result = try await MainActor.run {
-                    try StillCaptureProcessor(paths: paths).process(sourceURL: source, configuration: configuration)
+                    try StillCaptureProcessor(paths: paths).process(sourceURL: source, configuration: processingConfiguration)
                 }
                 let output = OutputManager(directory: paths.expandUserPath(configuration.output.directory))
                 let key = output.objectKey(for: source, kind: .image, format: result.format, prefix: configuration.storage?.paths.images ?? "screenshots")
                 try await tracker.processed(.init(fingerprint: stableFingerprint, outputPath: result.outputURL.path, objectKey: key))
                 scheduleDelivery(file: result.outputURL, source: source, fingerprint: stableFingerprint, objectKey: key, contentType: result.format.mimeType, configuration: configuration)
+                if configuration.source.retention == .replaceAfterSuccess {
+                    try await replaceSource(result.outputURL, source: source, fingerprint: stableFingerprint, objectKey: key)
+                    Log.info("Processed and replaced screenshot: \(source.lastPathComponent)")
+                } else {
+                    Log.info("Processed screenshot: \(source.lastPathComponent) -> \(result.outputURL.path)")
+                }
                 return
             case .video:
                 pendingVideos.append(.init(source: source, configuration: configuration, fingerprint: stableFingerprint))
@@ -235,6 +246,7 @@ public actor Daemon {
             let key = output.objectKey(for: job.source, kind: .video, format: result.format, prefix: job.configuration.storage?.paths.videos ?? "recordings")
             try await tracker.processed(.init(fingerprint: job.fingerprint, outputPath: result.outputURL.path, objectKey: key))
             scheduleDelivery(file: result.outputURL, source: job.source, fingerprint: job.fingerprint, objectKey: key, contentType: result.format.mimeType, configuration: job.configuration)
+            Log.info("Processed recording: \(job.source.lastPathComponent) -> \(result.outputURL.path)")
         } catch {
             await tracker.failed(job.fingerprint)
             Log.processing.error("Failed to process recording \(job.source.lastPathComponent, privacy: .private): \(error.localizedDescription, privacy: .public)")
@@ -249,5 +261,15 @@ public actor Daemon {
                 try? FileManager.default.removeItem(at: source)
             }
         }
+    }
+
+    private func replaceSource(_ output: URL, source: URL, fingerprint: SourceFingerprint, objectKey: String) async throws {
+        guard try stabilizer.fingerprint(source) == fingerprint else {
+            Log.processing.notice("Source changed after processing; keeping the edited original.")
+            return
+        }
+        try AtomicWriter.write(Data(contentsOf: output), to: source)
+        let replacement = try stabilizer.fingerprint(source)
+        try await tracker.processed(.init(fingerprint: replacement, outputPath: source.path, objectKey: objectKey))
     }
 }

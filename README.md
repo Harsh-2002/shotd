@@ -27,6 +27,8 @@ Useful commands:
 shotd status
 shotd doctor
 shotd setup
+shotd logs
+shotd logs --follow
 shotd update --check
 shotd update
 ```

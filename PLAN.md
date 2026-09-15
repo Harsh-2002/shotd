@@ -3152,6 +3152,10 @@ If `config.json` is absent, it starts the minimal `shotd setup` onboarding flow.
 
 First-time interactive setup asks for the screenshot watch folder and finished-media output folder, offering safe `~/Pictures/shotd/...` defaults. It then explains the macOS Screenshot save-location setting and asks before installing the per-user LaunchAgent. Non-interactive setup uses explicit options or the defaults.
 
+Setup is re-runnable and uses color only when attached to a terminal. Pasted shell-escaped spaces are normalized, and watch/output directories may not contain one another. Users can optionally replace an original screenshot with its processed result; replacement preserves the source format, occurs only when the original fingerprint is unchanged, and is marked processed to prevent watcher loops. Storage delivery remains asynchronous.
+
+`shotd logs` shows the latest concise processing activity and errors. `shotd logs --follow` streams new entries for live troubleshooting.
+
 The CLI provides native zsh completion output through `shotd completions zsh`; the public installer configures it automatically.
 
 `shotd update --check` reports the latest GitHub Release. `shotd update` verifies the archive checksum before it replaces anything. When Developer ID signing is available, it also requires the downloaded binary to have the same Developer ID team as the installed binary.

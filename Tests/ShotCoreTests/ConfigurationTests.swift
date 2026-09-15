@@ -21,6 +21,14 @@ final class ConfigurationTests: XCTestCase {
         XCTAssertThrowsError(try ConfigValidator.validate(configuration, paths: paths))
     }
 
+    func testWatchAndOutputDirectoriesCannotOverlap() throws {
+        let paths = try ApplicationPaths()
+        var configuration = ShotdConfiguration()
+        configuration.watch.directory = "~/Pictures/Screenshots"
+        configuration.output.directory = "~/Pictures/Screenshots/shotd"
+        XCTAssertThrowsError(try ConfigValidator.validate(configuration, paths: paths))
+    }
+
     func testCalendarReleaseVersionsCompareChronologically() {
         XCTAssertTrue(BuildInfo.isNewer("v2026.09.16", than: "v2026.09.15"))
         XCTAssertFalse(BuildInfo.isNewer("v2026.09.15", than: "v2026.09.15"))

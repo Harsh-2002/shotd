@@ -68,7 +68,7 @@ public struct WatchConfiguration: Codable, Equatable, Sendable {
     public init(directory: String = "~/Pictures/shotd/inbox") { self.directory = directory }
 }
 
-public enum SourceRetention: String, Codable, Sendable { case keep, deleteAfterSuccess }
+public enum SourceRetention: String, Codable, Sendable { case keep, deleteAfterSuccess, replaceAfterSuccess }
 
 public struct SourceConfiguration: Codable, Equatable, Sendable {
     public var retention: SourceRetention
