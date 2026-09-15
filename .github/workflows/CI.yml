@@ -21,7 +21,7 @@ jobs:
         run: |
           test "$(uname -m)" = "arm64"
           xcodebuild -version
-          swift --version | grep -q '^Swift version 6\.'
+          swift --version 2>&1 | grep -q 'Swift version 6\.'
       - name: Check scripts
         run: |
           sh -n Packaging/install.sh
