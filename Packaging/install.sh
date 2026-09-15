@@ -59,9 +59,26 @@ fi
 configuration="$HOME/Library/Application Support/shotd/config.json"
 if [ -f "$configuration" ]; then
   "$binary" install
-  printf '%s\n' "shotd $version installed as an upgrade. Your existing configuration was preserved."
+  result="shotd $version upgraded. Your existing configuration was preserved."
 elif [ -t 0 ]; then
   "$binary" setup
+  result="shotd $version installed."
 else
   "$binary" setup --yes
+  result="shotd $version installed."
 fi
+
+mkdir -p "$HOME/.local/bin" "$HOME/.local/share/zsh/site-functions"
+ln -sf "$installed" "$HOME/.local/bin/shotd"
+"$installed" completions zsh > "$HOME/.local/share/zsh/site-functions/_shotd"
+
+profile="$HOME/.zprofile"
+path_line='export PATH="$HOME/.local/bin:$PATH"'
+fpath_line='fpath=("$HOME/.local/share/zsh/site-functions" $fpath)'
+grep -Fqx "$path_line" "$profile" 2>/dev/null || printf '\n%s\n' "$path_line" >> "$profile"
+grep -Fqx "$fpath_line" "$profile" 2>/dev/null || printf '%s\nautoload -Uz compinit && compinit\n' "$fpath_line" >> "$profile"
+
+printf '\n%s\n' "$result"
+printf '%s\n' "Open a new Terminal and run: shotd doctor"
+printf '%s\n' "Do not use sudo."
+printf '%s\n' "If macOS blocks first launch, approve shotd in System Settings > Privacy & Security, then run this installer again."

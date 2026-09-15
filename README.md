@@ -15,9 +15,7 @@ Open Terminal, paste this command, and press Return:
 sh -c "$(curl -fsSL https://raw.githubusercontent.com/Harsh-2002/shotd/main/Packaging/install.sh)"
 ```
 
-The installer verifies the download and starts a guided setup. Press Return to accept the recommended folders, then follow the instruction shown for macOS Screenshot.
-
-Do not use `sudo`. If macOS blocks the first launch because this personal project is not notarized, approve it in **System Settings > Privacy & Security**, then run the installer again.
+The installer verifies the download, configures the `shotd` command and completion, and starts guided setup. Press Return to accept the recommended folders, then follow the instruction shown for macOS Screenshot.
 
 ## Use
 
@@ -32,20 +30,6 @@ shotd setup
 shotd update --check
 shotd update
 ```
-
-Optional zsh completion:
-
-```bash
-mkdir -p ~/.zfunc && shotd completions zsh > ~/.zfunc/_shotd
-```
-
-If `shotd` is not on your PATH, use:
-
-```bash
-~/Library/Application\ Support/shotd/bin/shotd doctor
-```
-
-Running the installer again upgrades shotd without removing your configuration, state, backgrounds, output files, or Keychain credentials.
 
 ## Uninstall
 
