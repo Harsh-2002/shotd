@@ -53,7 +53,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ github.ref_name }}
-        run: gh release create "$VERSION" dist/* --repo "$GITHUB_REPOSITORY" --title "shotd $VERSION" --generate-notes
+        run: |
+          if gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$VERSION" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$VERSION" dist/* --repo "$GITHUB_REPOSITORY" --title "shotd $VERSION" --generate-notes
+          fi
       - name: Retire previous published releases
         env:
           GH_TOKEN: ${{ github.token }}
