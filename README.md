@@ -86,6 +86,8 @@ The release executable statically includes WebP and AVIF codec backends.
 
 Versions use calendar format: `vYYYY.MM.DD`. Pushing a matching tag triggers `.github/workflows/release.yml`, which builds a native Apple-silicon (`arm64`) archive, validates codec availability and dynamic dependencies, signs it with Developer ID, notarizes it, writes `SHA256SUMS`, and publishes the GitHub release.
 
+Only one published release is active at a time. After a new release has been published successfully, the workflow deletes older release pages and assets while retaining their Git tags.
+
 Before tagging, update `BuildInfo.version` to the exact tag and configure these GitHub Actions secrets:
 
 - `DEVELOPER_ID_APPLICATION_P12`

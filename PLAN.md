@@ -1,4 +1,6 @@
-# shotd
+# shotd Plan
+
+> **Source of truth:** This document defines what shotd is, its product direction, and durable release decisions. Read it before changing user-visible behavior, installation, updating, storage delivery, or release automation. Update it in the same change when any of those decisions change.
 
 ## Native macOS Screenshot & Recording Post-Processing Daemon
 
@@ -3149,3 +3151,9 @@ If `config.json` is absent, it starts the minimal `shotd setup` onboarding flow.
 `shotd update --check` reports the latest GitHub Release. `shotd update` verifies the archive checksum and requires the downloaded binary to have the same Developer ID team as the installed binary before it replaces anything.
 
 No installer or updater may use `sudo`, change a shell profile, write a system-wide binary path, or install a LaunchDaemon.
+
+## Release Lifecycle
+
+Release publication is initiated only by manually pushing a `vYYYY.MM.DD` tag. The GitHub Actions workflow builds and validates the Apple-silicon archive, signs and notarizes it, publishes the new release and its `SHA256SUMS`, then retires every older published GitHub Release.
+
+There is exactly one active published release at a time. Older Git tags remain for source history, but their GitHub Release pages and downloadable assets are deleted only after the new release is successfully published. A failed build, signing, notarization, or publication must leave the existing active release untouched.

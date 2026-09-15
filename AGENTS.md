@@ -4,6 +4,10 @@
 
 This guide applies to the entire repository. `shotd` is a macOS 14+ Swift 6 command-line application and GUI-domain LaunchAgent. Preserve its core guarantee: image outputs and clipboard writes remain serialized and never wait for storage delivery.
 
+## Source Of Truth
+
+`PLAN.md` defines the product, its direction, and durable release decisions. Read it before changing user-visible behavior, installer/updater behavior, storage delivery, target platforms, or release automation. Update `PLAN.md` in the same change whenever one of those decisions changes; keep README instructions consistent with it. This guide governs implementation constraints and validation, while `PLAN.md` governs what the project is and where it is headed.
+
 ## Architecture
 
 - `Sources/ShotCore/Runtime`: CLI, LaunchAgent lifecycle, installation, updates, and daemon coordination.
@@ -33,6 +37,7 @@ swift test
 - Do not change, remove, or overwrite a user's config, state, Keychain entries, output, or imported backgrounds during install/update/uninstall unless the CLI explicitly promises it.
 - Installation and updates run only for the logged-in GUI user. Never use `sudo`, a LaunchDaemon, shell-profile mutation, or system-wide binary paths.
 - Release changes must retain the Apple-silicon artifact, checksum verification, stable Developer ID signing, and notarization. Update `BuildInfo.version` to exactly match a `vYYYY.MM.DD` release tag.
+- A manually pushed calendar tag initiates publication. There may be only one active published GitHub Release: retire older published releases only after the new release has been created successfully, while retaining their Git tags.
 
 ## Generated And External Files
 
