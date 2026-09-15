@@ -56,17 +56,18 @@ if [ -e "$installed" ]; then
   fi
 fi
 
-configuration="$HOME/Library/Application Support/shotd/config.json"
-if [ -f "$configuration" ]; then
+configuration="$HOME/Library/Application Support/shotd/settings.json"
+legacy_configuration="$HOME/Library/Application Support/shotd/config.json"
+if [ -f "$configuration" ] || [ -f "$legacy_configuration" ]; then
   if "$binary" config validate >/dev/null 2>&1; then
     "$binary" install
     result="shotd $version upgraded. Your existing configuration was preserved."
-  elif [ -t 0 ]; then
+  elif [ -t 0 ] && "$binary" config repairable >/dev/null 2>&1; then
     printf '%s\n' "Your saved shotd configuration needs a quick repair."
     "$binary" setup
     result="shotd $version installed and your configuration was updated."
   else
-    printf '%s\n' "Your saved shotd configuration is invalid. Run this installer in an interactive terminal to repair it." >&2
+    printf '%s\n' "Your saved shotd settings are invalid and were preserved. Run 'shotd setup' from an existing installation or inspect settings.json before reinstalling." >&2
     exit 1
   fi
 elif [ -t 0 ]; then

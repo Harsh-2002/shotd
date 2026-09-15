@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: macOS arm64 / Swift 6
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+      - name: Verify build environment
+        run: |
+          test "$(uname -m)" = "arm64"
+          xcodebuild -version
+          swift --version | grep -q '^Swift version 6\.'
+      - name: Check scripts
+        run: |
+          sh -n Packaging/install.sh
+          zsh -n Packaging/release.sh
+          git diff --check
+      - name: Prepare codecs
+        run: Packaging/build-codecs.sh
+      - name: Run unit tests
+        run: swift test
+      - name: Build release binary
+        run: swift build -c release
+      - name: Run isolated diagnostics
+        run: |
+          export HOME="$RUNNER_TEMP/shotd-home"
+          export CFFIXED_USER_HOME="$HOME"
+          mkdir -p "$HOME"
+          .build/release/shotd doctor
+      - name: Test interactive onboarding repair
+        run: Packaging/test-onboarding.sh
+      - name: Check zsh completion
+        run: .build/release/shotd completions zsh | zsh -n

@@ -7,9 +7,11 @@ public enum ConfigValidator {
         }
         try validateDirectory(configuration.watch.directory, name: "watch.directory", paths: paths)
         try validateDirectory(configuration.output.directory, name: "output.directory", paths: paths)
-        let watchDirectory = paths.expandUserPath(configuration.watch.directory).standardizedFileURL
-        let outputDirectory = paths.expandUserPath(configuration.output.directory).standardizedFileURL
-        guard !overlap(watchDirectory, outputDirectory) else {
+        guard !directoriesOverlap(
+            watch: configuration.watch.directory,
+            output: configuration.output.directory,
+            paths: paths
+        ) else {
             throw ShotdError.invalidConfiguration("watch.directory and output.directory must not contain one another.")
         }
         guard (0...1).contains(configuration.layout.paddingPercent) else {
@@ -50,15 +52,30 @@ public enum ConfigValidator {
     }
 
     private static func validateDirectory(_ value: String, name: String, paths: ApplicationPaths) throws {
-        guard !value.isEmpty, paths.expandUserPath(value).path.hasPrefix(paths.home.path) else {
+        let home = canonicalPath(paths.home)
+        let directory = canonicalPath(paths.expandUserPath(value))
+        let homePrefix = home.path.hasSuffix("/") ? home.path : home.path + "/"
+        guard !value.isEmpty, directory == home || directory.path.hasPrefix(homePrefix) else {
             throw ShotdError.invalidConfiguration("\(name) must be a non-empty path inside the current user's home directory.")
         }
     }
 
-    private static func overlap(_ first: URL, _ second: URL) -> Bool {
+    public static func directoriesOverlap(watch: String, output: String, paths: ApplicationPaths) -> Bool {
+        let first = canonicalPath(paths.expandUserPath(watch))
+        let second = canonicalPath(paths.expandUserPath(output))
         let firstPath = first.path.hasSuffix("/") ? first.path : first.path + "/"
         let secondPath = second.path.hasSuffix("/") ? second.path : second.path + "/"
         return first == second || firstPath.hasPrefix(secondPath) || secondPath.hasPrefix(firstPath)
+    }
+
+    private static func canonicalPath(_ url: URL) -> URL {
+        var existing = url.standardizedFileURL
+        var missing: [String] = []
+        while !FileManager.default.fileExists(atPath: existing.path), existing.path != "/" {
+            missing.insert(existing.lastPathComponent, at: 0)
+            existing.deleteLastPathComponent()
+        }
+        return missing.reduce(existing.resolvingSymlinksInPath()) { $0.appending(path: $1) }.standardizedFileURL
     }
 
     private static func validate(background: BackgroundConfiguration, paths: ApplicationPaths, allowDesktop: Bool) throws {

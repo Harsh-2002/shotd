@@ -6,11 +6,32 @@ on:
       - "v[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9][0-9]"
 
 permissions:
+  actions: read
   contents: write
 
 jobs:
+  verify-ci:
+    name: Verify CI passed
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require successful CI for tagged commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for attempt in {1..60}; do
+            conclusion="$(gh api -X GET "repos/$GITHUB_REPOSITORY/actions/workflows/CI.yml/runs" -f head_sha="$GITHUB_SHA" -f event=push --jq '.workflow_runs[0].conclusion // ""')"
+            case "$conclusion" in
+              success) exit 0 ;;
+              failure|cancelled|timed_out|action_required) exit 1 ;;
+            esac
+            sleep 10
+          done
+          echo "CI did not complete successfully for $GITHUB_SHA." >&2
+          exit 1
+
   build:
     name: macOS arm64
+    needs: verify-ci
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v5
@@ -45,6 +66,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           OUTPUT_DIRECTORY: dist
+          SHOTD_RELEASE_SKIP_TESTS: "1"
         run: Packaging/release.sh
       - name: Create checksums
         working-directory: dist

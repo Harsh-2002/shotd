@@ -19,7 +19,9 @@ output="${OUTPUT_DIRECTORY:-$root/dist}"
 mkdir -p "$output"
 
 "$root/Packaging/build-codecs.sh" 14.0
-swift test --package-path "$root"
+if [[ "${SHOTD_RELEASE_SKIP_TESTS:-0}" != "1" ]]; then
+  swift test --package-path "$root"
+fi
 swift build --package-path "$root" -c release
 binary="$root/.build/release/shotd"
 

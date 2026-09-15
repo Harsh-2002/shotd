@@ -35,6 +35,13 @@ public enum CredentialStore {
     }
 
     public static func get(named name: String) throws -> StorageCredentials {
+        guard let credentials = try getIfPresent(named: name) else {
+            throw ShotdError.storage("No Keychain credentials named \(name).")
+        }
+        return credentials
+    }
+
+    public static func getIfPresent(named name: String) throws -> StorageCredentials? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -44,9 +51,8 @@ public enum CredentialStore {
         ]
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess, let data = result as? Data else {
-            throw status == errSecItemNotFound ? ShotdError.storage("No Keychain credentials named \(name).") : keychainError(status)
-        }
+        if status == errSecItemNotFound { return nil }
+        guard status == errSecSuccess, let data = result as? Data else { throw keychainError(status) }
         do {
             return try JSONDecoder().decode(StorageCredentials.self, from: data)
         } catch {

@@ -21,6 +21,18 @@ public struct CommandRunner: Sendable {
             case ["config", "validate"]:
                 _ = try await loader.load()
                 Log.info("Configuration valid")
+            case ["config", "repairable"]:
+                var configuration = try await loader.loadUnvalidated()
+                guard ConfigValidator.directoriesOverlap(
+                    watch: configuration.watch.directory,
+                    output: configuration.output.directory,
+                    paths: paths
+                ) else {
+                    throw ShotdError.invalidConfiguration("Saved settings require manual repair.")
+                }
+                let watch = paths.expandUserPath(configuration.watch.directory).standardizedFileURL
+                configuration.output.directory = watch.deletingLastPathComponent().appending(path: "shotd-output").path
+                try ConfigValidator.validate(configuration, paths: paths)
             case _ where arguments.count == 3 && arguments[0] == "background" && arguments[1] == "import":
                 let source = URL(filePath: arguments[2]).standardizedFileURL
                 guard FileManager.default.fileExists(atPath: source.path) else {
@@ -200,6 +212,14 @@ public struct CommandRunner: Sendable {
         var acceptDefaults = false
         var watchDirectory: String?
         var outputDirectory: String?
+        var importedBackground: URL?
+        var credentialRollback: (name: String, previous: StorageCredentials?)?
+        var committed = false
+        defer {
+            if !committed, let importedBackground {
+                try? FileManager.default.removeItem(at: importedBackground)
+            }
+        }
         var index = 1
         while index < arguments.count {
             switch arguments[index] {
@@ -223,46 +243,94 @@ public struct CommandRunner: Sendable {
             index += 1
         }
 
-        let exists = FileManager.default.fileExists(atPath: paths.configuration.path)
+        let hadCanonicalSettings = FileManager.default.fileExists(atPath: paths.configuration.path)
+        let hadLegacySettings = FileManager.default.fileExists(atPath: paths.legacyConfiguration.path)
+        let exists = hadCanonicalSettings || hadLegacySettings
         var configuration = try await (exists ? loader.loadUnvalidated() : ShotdConfiguration())
+        let originalConfiguration = exists ? configuration : nil
+        configuration.watch.directory = normalizedPath(configuration.watch.directory)
+        configuration.output.directory = normalizedPath(configuration.output.directory)
         if let watchDirectory { configuration.watch.directory = watchDirectory }
         if let outputDirectory { configuration.output.directory = outputDirectory }
         if !acceptDefaults, isatty(STDIN_FILENO) == 1 {
-            print("\n\(styled("SHOTD SETUP", code: "1;36"))")
+            print("\n\(styled("SHOTD SETUP", code: "1;35"))")
             print(exists ? "Update your setup. Press Return to keep each value." : "A few choices, then screenshots are ready to paste.")
             if watchDirectory == nil {
-                let answer = try SecureTerminalInput.read(prompt: styled("Screenshot folder", code: "36") + " [\(configuration.watch.directory)]: ", secret: false, allowEmpty: true)
+                let answer = try SecureTerminalInput.read(prompt: fieldPrompt("Screenshot folder", defaultValue: configuration.watch.directory), secret: false, allowEmpty: true)
                 if !answer.isEmpty { configuration.watch.directory = normalizedPath(answer) }
             }
             if outputDirectory == nil {
-                let answer = try SecureTerminalInput.read(prompt: styled("Finished media folder", code: "36") + " [\(configuration.output.directory)]: ", secret: false, allowEmpty: true)
+                let answer = try SecureTerminalInput.read(prompt: fieldPrompt("Finished media folder", defaultValue: configuration.output.directory), secret: false, allowEmpty: true)
                 if !answer.isEmpty { configuration.output.directory = normalizedPath(answer) }
             }
-            let replacing = configuration.source.retention == .replaceAfterSuccess
-            let prompt = replacing ? "Replace original screenshots? [Y/n]: " : "Replace original screenshots? [y/N]: "
-            let answer = try SecureTerminalInput.read(prompt: styled(prompt, code: "36"), secret: false, allowEmpty: true)
-            if !answer.isEmpty {
-                configuration.source.retention = ["y", "yes"].contains(answer.lowercased()) ? .replaceAfterSuccess : .keep
+            while ConfigValidator.directoriesOverlap(
+                watch: configuration.watch.directory,
+                output: configuration.output.directory,
+                paths: paths
+            ) {
+                let watch = paths.expandUserPath(configuration.watch.directory).standardizedFileURL
+                let suggestion = watch.deletingLastPathComponent().appending(path: "shotd-output").path
+                print(styled("Finished media must be outside the screenshot folder.", code: "1;33"))
+                let answer = try SecureTerminalInput.read(
+                    prompt: fieldPrompt("Finished media folder", defaultValue: suggestion),
+                    secret: false,
+                    allowEmpty: true
+                )
+                configuration.output.directory = answer.isEmpty ? suggestion : normalizedPath(answer)
             }
+            let replacing = try promptYesNo(
+                "Replace original screenshots?",
+                defaultValue: configuration.source.retention == .replaceAfterSuccess
+            )
+            configuration.source.retention = replacing ? .replaceAfterSuccess : .keep
+            print("\n\(styled("APPEARANCE", code: "1;35"))")
+            let background = try await configureBackground(configuration.background, preservingCurrent: exists, paths: paths)
+            configuration.background = background.configuration
+            importedBackground = background.imported
+            print("\n\(styled("IMAGE OUTPUT", code: "1;35"))")
+            configuration.image = try configureImage(configuration.image)
+            print("\n\(styled("CLOUD STORAGE", code: "1;35"))")
+            let storage = try await configureStorage(configuration.storage, configuration: configuration, paths: paths)
+            configuration.storage = storage.configuration
+            credentialRollback = storage.credentialRollback
         }
-        try await loader.write(configuration)
-
+        do {
+            try await loader.write(configuration)
+        } catch {
+            if let credentialRollback {
+                do {
+                    if let previous = credentialRollback.previous {
+                        try CredentialStore.set(previous, named: credentialRollback.name)
+                    } else {
+                        try CredentialStore.delete(named: credentialRollback.name)
+                    }
+                } catch let rollbackError {
+                    throw ShotdError.storage("Setup failed and Keychain rollback also failed: \(rollbackError.localizedDescription)")
+                }
+            }
+            throw error
+        }
         let watch = paths.expandUserPath(configuration.watch.directory).path
         let output = paths.expandUserPath(configuration.output.directory).path
         print("\n\(styled("Setup ready", code: "1;32"))")
-        print("  Screenshots: \(watch)")
-        print("  Finished:    \(output)")
+        print("  \(styled("Screenshots:", code: "1;34")) \(styled(watch, code: "32"))")
+        print("  \(styled("Finished:", code: "1;34"))    \(styled(output, code: "32"))")
         let retentionDescription: String
         switch configuration.source.retention {
         case .keep: retentionDescription = "keep"
         case .deleteAfterSuccess: retentionDescription = "delete after delivery"
         case .replaceAfterSuccess: retentionDescription = "replace safely"
         }
-        print("  Originals:   \(retentionDescription)")
+        print("  \(styled("Originals:", code: "1;34"))   \(styled(retentionDescription, code: "32"))")
+        print("  \(styled("Background:", code: "1;34"))  \(styled(configuration.background.type.rawValue, code: "32"))")
+        print("  \(styled("Image:", code: "1;34"))       \(styled(configuration.image.format.rawValue + (configuration.image.compression.map { " (\($0.rawValue))" } ?? ""), code: "32"))")
+        print("  \(styled("Storage:", code: "1;34"))     \(styled(configuration.storage?.bucket ?? "local only", code: "32"))")
         print("\nPress Shift-Command-5, choose Options, then set Save to the screenshot folder above.")
         print("If your desktop wallpaper is stored in Downloads, macOS may ask once for folder access.")
 
         guard startAfterSetup else {
+            committed = true
+            if hadLegacySettings, !hadCanonicalSettings { try await loader.finalizeLegacyMigration() }
             print("Setup is ready. Run `shotd install` when you want shotd to start automatically.")
             return
         }
@@ -272,12 +340,230 @@ public struct CommandRunner: Sendable {
             }
             let answer = try SecureTerminalInput.read(prompt: "Start shotd automatically now? [Y/n] ", secret: false, allowEmpty: true)
             if !answer.isEmpty, !["y", "yes"].contains(answer.lowercased()) {
+                committed = true
+                if hadLegacySettings, !hadCanonicalSettings { try await loader.finalizeLegacyMigration() }
                 print("Setup is ready. Run `shotd install` when you want shotd to start automatically.")
                 return
             }
         }
-        try LaunchAgent.install(paths: paths, executable: try invokedExecutable())
+        do {
+            try LaunchAgent.install(paths: paths, executable: try invokedExecutable())
+        } catch {
+            do {
+                if hadCanonicalSettings, let originalConfiguration {
+                    try await loader.write(originalConfiguration)
+                } else {
+                    try? FileManager.default.removeItem(at: paths.configuration)
+                }
+            } catch let rollbackError {
+                throw ShotdError.filesystem("Automatic startup failed and settings rollback also failed: \(rollbackError.localizedDescription)")
+            }
+            throw error
+        }
+        committed = true
+        if hadLegacySettings, !hadCanonicalSettings { try await loader.finalizeLegacyMigration() }
         Log.info("shotd is ready. Run `shotd doctor` any time to check its setup.")
+    }
+
+    private func configureBackground(
+        _ current: BackgroundConfiguration,
+        preservingCurrent: Bool,
+        paths: ApplicationPaths
+    ) async throws -> (configuration: BackgroundConfiguration, imported: URL?) {
+        let choice = try promptChoice(
+            preservingCurrent ? "Background [keep/desktop/custom/solid]" : "Background [desktop/custom/solid]",
+            defaultValue: preservingCurrent ? "keep" : "desktop",
+            allowed: preservingCurrent ? ["keep", "desktop", "custom", "solid"] : ["desktop", "custom", "solid"]
+        )
+        var background = current
+        switch choice {
+        case "keep":
+            return (background, nil)
+        case "desktop":
+            background.type = .desktop
+            background.path = nil
+            return (background, nil)
+        case "solid":
+            while true {
+                let existing = background.color ?? "#17191F"
+                let answer = try SecureTerminalInput.read(prompt: fieldPrompt("Background color", defaultValue: existing), secret: false, allowEmpty: true)
+                var candidateBackground = background
+                candidateBackground.type = .solid
+                candidateBackground.path = nil
+                candidateBackground.color = answer.isEmpty ? existing : answer
+                var candidate = ShotdConfiguration()
+                candidate.background = candidateBackground
+                if (try? ConfigValidator.validate(candidate, paths: paths)) != nil { return (candidateBackground, nil) }
+                print(styled("Use a color such as #17191F.", code: "1;33"))
+            }
+        default:
+            while true {
+                let answer = try SecureTerminalInput.read(prompt: fieldPrompt("Background image path"), secret: false)
+                let source = paths.expandUserPath(normalizedPath(answer)).standardizedFileURL
+                guard FileManager.default.fileExists(atPath: source.path) else {
+                    print(styled("That image file does not exist.", code: "1;33"))
+                    continue
+                }
+                do {
+                    _ = try await MainActor.run { try ImageDecoder.decode(at: source) }
+                    let imported = try importBackground(source, paths: paths)
+                    background.type = .image
+                    background.path = imported.path
+                    return (background, imported)
+                } catch {
+                    print(styled("That file is not a readable image.", code: "1;33"))
+                }
+            }
+        }
+    }
+
+    private func configureImage(_ current: ImageConfiguration) throws -> ImageConfiguration {
+        var image = current
+        let compressing = try promptYesNo("Compress screenshots?", defaultValue: current.format != .png)
+        if !compressing {
+            image.format = .png
+            image.compression = .lossless
+            image.quality = nil
+            return image
+        }
+        image.format = ImageFormat(rawValue: try promptChoice(
+            "Output format [webp/avif/heic/jpeg/png/preserve]",
+            defaultValue: current.format.rawValue,
+            allowed: ["webp", "avif", "heic", "jpeg", "png", "preserve"]
+        ))!
+        if image.format == .preserve {
+            image.compression = nil
+            image.quality = nil
+            return image
+        } else if image.format == .png {
+            image.compression = .lossless
+        } else if [.jpeg, .heic].contains(image.format) {
+            image.compression = .lossy
+        } else {
+            image.compression = Compression(rawValue: try promptChoice(
+                "Compression [lossless/lossy]",
+                defaultValue: current.compression?.rawValue ?? "lossless",
+                allowed: ["lossless", "lossy"]
+            ))!
+        }
+        if image.compression == .lossy {
+            while true {
+                let defaultQuality = image.quality ?? 82
+                let answer = try SecureTerminalInput.read(prompt: fieldPrompt("Quality 1-100", defaultValue: String(defaultQuality)), secret: false, allowEmpty: true)
+                if answer.isEmpty { image.quality = defaultQuality; break }
+                if let quality = Int(answer), (1...100).contains(quality) { image.quality = quality; break }
+                print(styled("Enter a number from 1 to 100.", code: "1;33"))
+            }
+        } else {
+            image.quality = nil
+        }
+        return image
+    }
+
+    private func configureStorage(
+        _ current: StorageConfiguration?,
+        configuration: ShotdConfiguration,
+        paths: ApplicationPaths
+    ) async throws -> (configuration: StorageConfiguration?, credentialRollback: (name: String, previous: StorageCredentials?)?) {
+        if let current {
+            let choice = try promptChoice("Storage [keep/change/disable]", defaultValue: "keep", allowed: ["keep", "change", "disable"])
+            if choice == "keep" { return (current, nil) }
+            if choice == "disable" { return (nil, nil) }
+        } else if try !promptYesNo("Upload copies to S3-compatible storage?", defaultValue: false) {
+            return (nil, nil)
+        }
+
+        let endpoint = try SecureTerminalInput.read(prompt: fieldPrompt("S3 endpoint URL"), secret: false)
+        let region = try SecureTerminalInput.read(prompt: fieldPrompt("Region", defaultValue: "auto"), secret: false, allowEmpty: true)
+        let bucket = try SecureTerminalInput.read(prompt: fieldPrompt("Bucket"), secret: false)
+        let addressing = S3Addressing(rawValue: try promptChoice(
+            "Addressing [auto/path/virtualHost]",
+            defaultValue: "auto",
+            allowed: ["auto", "path", "virtualHost"]
+        ))!
+        let credential = try SecureTerminalInput.read(prompt: fieldPrompt("Credential name", defaultValue: "default"), secret: false, allowEmpty: true)
+        let accessKeyID = try SecureTerminalInput.read(prompt: fieldPrompt("Access key ID"), secret: false)
+        let secretAccessKey = try SecureTerminalInput.read(prompt: fieldPrompt("Secret access key"), secret: true)
+        let token = try SecureTerminalInput.read(prompt: fieldPrompt("Session token (optional)"), secret: true, allowEmpty: true)
+        let credentials = StorageCredentials(accessKeyID: accessKeyID, secretAccessKey: secretAccessKey, sessionToken: token.isEmpty ? nil : token)
+        let storage = StorageConfiguration(
+            endpoint: endpoint,
+            region: region.isEmpty ? "auto" : region,
+            bucket: bucket,
+            credential: credential.isEmpty ? "default" : credential,
+            addressing: addressing
+        )
+        var candidate = configuration
+        candidate.storage = storage
+        try ConfigValidator.validate(candidate, paths: paths)
+        guard try promptYesNo("Verify storage now? This uploads and deletes a small test file.", defaultValue: true) else {
+            throw ShotdError.invalidArguments("Storage must be verified before it can be enabled.")
+        }
+        try await verifyStorage(storage, credentials: credentials)
+        let previous = try CredentialStore.getIfPresent(named: storage.credential)
+        try CredentialStore.set(credentials, named: storage.credential)
+        print(styled("Storage verified.", code: "1;32"))
+        return (storage, (storage.credential, previous))
+    }
+
+    private func verifyStorage(_ storage: StorageConfiguration, credentials: StorageCredentials) async throws {
+        let client = S3Client(configuration: storage, credentials: credentials)
+        let key = "shotd-diagnostics/\(UUID().uuidString).txt"
+        let data = Data("shotd storage diagnostics\n".utf8)
+        do {
+            try await client.put(data: data, key: key, contentType: "text/plain")
+            try await client.head(key: key)
+            _ = try await client.remoteURL(for: key)
+            try await client.delete(key: key)
+        } catch {
+            try? await client.delete(key: key)
+            throw error
+        }
+    }
+
+    private func importBackground(_ source: URL, paths: ApplicationPaths) throws -> URL {
+        let extensionName = source.pathExtension.isEmpty ? "image" : source.pathExtension.lowercased()
+        let name = OutputManager.sanitizedBaseName(source.deletingPathExtension().lastPathComponent)
+        let directory = paths.applicationSupport.appending(path: "backgrounds", directoryHint: .isDirectory)
+        let destination = directory.appending(path: "\(name)-\(UUID().uuidString).\(extensionName)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let temporary = directory.appending(path: ".\(destination.lastPathComponent).tmp")
+        do {
+            try FileManager.default.copyItem(at: source, to: temporary)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: temporary.path)
+            try AtomicWriter.replaceFile(at: temporary, with: destination)
+            return destination
+        } catch {
+            try? FileManager.default.removeItem(at: temporary)
+            throw error
+        }
+    }
+
+    private func promptChoice(_ prompt: String, defaultValue: String, allowed: Set<String>) throws -> String {
+        while true {
+            let answer = try SecureTerminalInput.read(prompt: fieldPrompt(prompt, defaultValue: defaultValue), secret: false, allowEmpty: true)
+            let value = answer.isEmpty ? defaultValue : answer
+            if allowed.contains(value) { return value }
+            print(styled("Choose one of: \(allowed.sorted().joined(separator: ", ")).", code: "1;33"))
+        }
+    }
+
+    private func promptYesNo(_ prompt: String, defaultValue: Bool) throws -> Bool {
+        while true {
+            let suffix = defaultValue ? "[Y/n]" : "[y/N]"
+            let rendered = "\(styled(prompt, code: "1;34")) \(styled(suffix, code: "33")): "
+            let answer = try SecureTerminalInput.read(prompt: rendered, secret: false, allowEmpty: true).lowercased()
+            if answer.isEmpty { return defaultValue }
+            if ["y", "yes"].contains(answer) { return true }
+            if ["n", "no"].contains(answer) { return false }
+            print(styled("Enter yes or no.", code: "1;33"))
+        }
+    }
+
+    private func fieldPrompt(_ label: String, defaultValue: String? = nil) -> String {
+        let rendered = styled(label, code: "1;34")
+        guard let defaultValue else { return "\(rendered): " }
+        return "\(rendered) [\(styled(defaultValue, code: "33"))]: "
     }
 
     private func showLogs(paths: ApplicationPaths, follow: Bool) throws {
