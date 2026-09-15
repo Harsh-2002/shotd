@@ -69,7 +69,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ github.ref_name }}
-        run: gh release create "$VERSION" dist/* --title "shotd $VERSION" --generate-notes
+        run: gh release create "$VERSION" dist/* --repo "$GITHUB_REPOSITORY" --title "shotd $VERSION" --generate-notes
       - name: Retire previous published releases
         env:
           GH_TOKEN: ${{ github.token }}
@@ -77,6 +77,6 @@ jobs:
         run: |
           gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" --jq '.[] | select(.draft == false) | .tag_name' | while IFS= read -r tag; do
             if [[ -n "$tag" && "$tag" != "$VERSION" ]]; then
-              gh release delete "$tag" --yes
+              gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes
             fi
           done
