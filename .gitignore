@@ -15,7 +15,11 @@ CodecKit/AVIF/ext/
 CodecKit/AVIF/.github/
 CodecKit/AVIF/android_jni/
 CodecKit/AVIF/apps/
-CodecKit/AVIF/contrib/
+CodecKit/AVIF/contrib/*
+!CodecKit/AVIF/contrib/CMakeLists.txt
+!CodecKit/AVIF/contrib/gdk-pixbuf/
+CodecKit/AVIF/contrib/gdk-pixbuf/*
+!CodecKit/AVIF/contrib/gdk-pixbuf/CMakeLists.txt
 CodecKit/AVIF/doc/
 CodecKit/AVIF/examples/
 CodecKit/AVIF/tests/
