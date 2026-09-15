@@ -15,6 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Import Developer ID certificate
+        if: ${{ secrets.DEVELOPER_ID_APPLICATION_P12 != '' }}
         env:
           CERTIFICATE_P12: ${{ secrets.DEVELOPER_ID_APPLICATION_P12 }}
           CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_APPLICATION_P12_PASSWORD }}

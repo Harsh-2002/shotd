@@ -136,17 +136,24 @@ public enum ReleaseUpdater {
         try runTool("/usr/bin/codesign", ["--verify", "--strict", candidate.path])
         let currentTeam = try signingTeam(for: current)
         let candidateTeam = try signingTeam(for: candidate)
-        guard !currentTeam.isEmpty, currentTeam == candidateTeam else {
+        switch (currentTeam, candidateTeam) {
+        case let (.some(current), .some(candidate)) where current == candidate:
+            return
+        case (nil, nil):
+            // Ad-hoc releases rely on the GitHub Release checksum rather than a Developer ID.
+            return
+        default:
             throw ShotdError.processing("Downloaded update is not signed by the same Developer ID team as the installed shotd binary.")
         }
     }
 
-    private static func signingTeam(for executable: URL) throws -> String {
+    private static func signingTeam(for executable: URL) throws -> String? {
         let output = try runTool("/usr/bin/codesign", ["--display", "--verbose=4", executable.path])
         guard let line = output.split(whereSeparator: \.isNewline).first(where: { $0.hasPrefix("TeamIdentifier=") }) else {
             throw ShotdError.processing("Unable to verify the shotd signing team.")
         }
-        return String(line.dropFirst("TeamIdentifier=".count))
+        let team = String(line.dropFirst("TeamIdentifier=".count))
+        return team == "not set" ? nil : team
     }
 
     @discardableResult

@@ -3,10 +3,6 @@ set -euo pipefail
 
 : "${VERSION:?Set VERSION to a vYYYY.MM.DD tag.}"
 : "${ARCH:?Set ARCH to arm64.}"
-: "${DEVELOPER_ID_APPLICATION:?Set DEVELOPER_ID_APPLICATION to the Developer ID Application signing identity.}"
-: "${APPLE_ID:?Set APPLE_ID for notarization.}"
-: "${APPLE_TEAM_ID:?Set APPLE_TEAM_ID for notarization.}"
-: "${APPLE_APP_SPECIFIC_PASSWORD:?Set APPLE_APP_SPECIFIC_PASSWORD for notarization.}"
 
 case "$VERSION" in
   v[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9][0-9]) ;;
@@ -40,13 +36,18 @@ if otool -L "$binary" | grep -E '/opt/homebrew|/usr/local|CodecKit' >/dev/null; 
   exit 1
 fi
 
-codesign --force --options runtime --timestamp --sign "$DEVELOPER_ID_APPLICATION" "$binary"
+if [[ -n "${DEVELOPER_ID_APPLICATION:-}" ]]; then
+  codesign --force --options runtime --timestamp --sign "$DEVELOPER_ID_APPLICATION" "$binary"
+else
+  print "No Developer ID identity configured; applying an ad-hoc signature."
+  codesign --force --sign - "$binary"
+fi
 codesign --verify --strict --verbose=2 "$binary"
-if ! "$binary" codecs | grep -q 'WEBP.*available'; then
+if ! "$binary" codecs | grep -A 1 '^WEBP$' | grep -q 'available: yes'; then
   print -u2 "WebP codec is unavailable in the release binary."
   exit 1
 fi
-if ! "$binary" codecs | grep -q 'AVIF.*available'; then
+if ! "$binary" codecs | grep -A 1 '^AVIF$' | grep -q 'available: yes'; then
   print -u2 "AVIF codec is unavailable in the release binary."
   exit 1
 fi
@@ -68,4 +69,8 @@ if [[ ! -f "$aom_license" ]]; then
 fi
 cp "$aom_license" "$package/licenses/libaom-LICENSE"
 ditto -c -k "$package/." "$archive"
-xcrun notarytool submit "$archive" --wait --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD"
+if [[ -n "${DEVELOPER_ID_APPLICATION:-}" && -n "${APPLE_ID:-}" && -n "${APPLE_TEAM_ID:-}" && -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" ]]; then
+  xcrun notarytool submit "$archive" --wait --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD"
+else
+  print "Release is not notarized. Configure Developer ID and Apple notarization secrets to enable it."
+fi

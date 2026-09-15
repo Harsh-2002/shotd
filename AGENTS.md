@@ -36,7 +36,8 @@ swift test
 - Keep credentials out of the repository. Production credentials belong in Keychain; localhost-only development credentials belong only in a protected local config.
 - Do not change, remove, or overwrite a user's config, state, Keychain entries, output, or imported backgrounds during install/update/uninstall unless the CLI explicitly promises it.
 - Installation and updates run only for the logged-in GUI user. Never use `sudo`, a LaunchDaemon, shell-profile mutation, or system-wide binary paths.
-- Release changes must retain the Apple-silicon artifact, checksum verification, stable Developer ID signing, and notarization. Update `BuildInfo.version` to exactly match a `vYYYY.MM.DD` release tag.
+- First-time setup is an interactive, non-technical flow with safe defaults; retain explicit non-interactive options for the installer and automation.
+- Release changes must retain the Apple-silicon artifact and checksum verification. Developer ID signing and notarization are optional hardening; when configured, retain the stable signing identity. Update `BuildInfo.version` to exactly match a `vYYYY.MM.DD` release tag.
 - A manually pushed calendar tag initiates publication. There may be only one active published GitHub Release: retire older published releases only after the new release has been created successfully, while retaining their Git tags.
 
 ## Generated And External Files

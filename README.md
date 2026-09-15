@@ -9,10 +9,11 @@ It has no GUI and does not replace Apple's capture workflow.
 Requirements for the prebuilt download are macOS 14 or later on an Apple silicon Mac. Install as the logged-in macOS user, never with `sudo`:
 
 ```bash
-curl --fail --silent --show-error --location https://raw.githubusercontent.com/Harsh-2002/shotd/main/Packaging/install.sh | zsh
+curl --fail --silent --show-error --location https://raw.githubusercontent.com/Harsh-2002/shotd/main/Packaging/install.sh -o /tmp/shotd-install.sh
+zsh /tmp/shotd-install.sh
 ```
 
-The installer chooses the correct signed release, verifies its SHA-256 checksum and code signature, then installs it to `~/Library/Application Support/shotd/bin/shotd`. Each archive also includes shotd's MIT license and bundled-codec license notices.
+The installer chooses the correct release, verifies its SHA-256 checksum and code signature, then installs it to `~/Library/Application Support/shotd/bin/shotd`. On a first install from Terminal, it starts an interactive setup that asks where screenshots and finished media should go. Each archive also includes shotd's MIT license and bundled-codec license notices.
 
 - A missing `~/Library/Application Support/shotd/config.json` starts first-time setup.
 - An existing configuration is an upgrade: it is preserved along with state, logs, imported backgrounds, and Keychain credentials.
@@ -27,7 +28,7 @@ Run the minimal guided setup at any time:
 shotd setup
 ```
 
-It shows the selected folders, explains the one macOS Screenshot setting required, and asks before starting the per-user LaunchAgent. For automation:
+On first use, it asks for the screenshot folder and output folder, shows the one macOS Screenshot setting required, and asks before starting the per-user LaunchAgent. Press Return at either path question to use the safe `~/Pictures/shotd/...` defaults. For automation:
 
 ```bash
 shotd setup --yes
@@ -52,7 +53,7 @@ shotd update --check
 shotd update
 ```
 
-`shotd update` downloads the matching architecture archive from GitHub Releases, verifies its SHA-256 checksum and Developer ID team, then performs the same transactional installation used by the installer. It refuses to replace an unsigned or differently signed installed binary.
+`shotd update` downloads the matching architecture archive from GitHub Releases, verifies its SHA-256 checksum, then performs the same transactional installation used by the installer. When Developer ID signing is enabled, it also requires the downloaded binary to have the same signing team as the installed binary.
 
 Configuration is stored at `~/Library/Application Support/shotd/config.json`. Valid changes reload automatically, including changes to `watch.directory`.
 
@@ -84,11 +85,11 @@ The release executable statically includes WebP and AVIF codec backends.
 
 ## Releases
 
-Versions use calendar format: `vYYYY.MM.DD`. Pushing a matching tag triggers `.github/workflows/release.yml`, which builds a native Apple-silicon (`arm64`) archive, validates codec availability and dynamic dependencies, signs it with Developer ID, notarizes it, writes `SHA256SUMS`, and publishes the GitHub release.
+Versions use calendar format: `vYYYY.MM.DD`. Pushing a matching tag triggers `.github/workflows/release.yml`, which builds a native Apple-silicon (`arm64`) archive, validates codec availability and dynamic dependencies, applies an ad-hoc signature, writes `SHA256SUMS`, and publishes the GitHub release. No Apple Developer membership is required.
 
 Only one published release is active at a time. After a new release has been published successfully, the workflow deletes older release pages and assets while retaining their Git tags.
 
-Before tagging, update `BuildInfo.version` to the exact tag and configure these GitHub Actions secrets:
+Before tagging, update `BuildInfo.version` to the exact tag. Developer ID signing and notarization are optional hardening and require these GitHub Actions secrets:
 
 - `DEVELOPER_ID_APPLICATION_P12`
 - `DEVELOPER_ID_APPLICATION_P12_PASSWORD`
@@ -97,7 +98,7 @@ Before tagging, update `BuildInfo.version` to the exact tag and configure these 
 - `APPLE_TEAM_ID`
 - `APPLE_APP_SPECIFIC_PASSWORD`
 
-The signing identity must remain stable across releases so installed copies can verify upgrades. The release workflow intentionally fails rather than publishing unsigned artifacts.
+Without Developer ID signing, checksums detect corrupted downloads but cannot prove publisher identity; GitHub's release access remains the trust boundary. If credentials are configured later, keep the signing identity stable so installed copies can verify upgrades. A browser-downloaded, non-notarized archive may require macOS approval before first launch.
 
 ## Uninstall
 

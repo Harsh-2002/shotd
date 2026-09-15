@@ -50,7 +50,7 @@ installed="$HOME/Library/Application Support/shotd/bin/shotd"
 if [[ -e "$installed" ]]; then
   current_team="$(codesign --display --verbose=4 "$installed" 2>&1 | grep '^TeamIdentifier=' | cut -d= -f2)"
   candidate_team="$(codesign --display --verbose=4 "$binary" 2>&1 | grep '^TeamIdentifier=' | cut -d= -f2)"
-  if [[ -z "$current_team" || "$current_team" != "$candidate_team" ]]; then
+  if [[ "$current_team" != "not set" || "$candidate_team" != "not set" ]] && [[ -z "$current_team" || "$current_team" != "$candidate_team" ]]; then
     print -u2 "The downloaded binary is not signed by the same Developer ID team as the installed shotd."
     exit 1
   fi
@@ -60,6 +60,8 @@ configuration="$HOME/Library/Application Support/shotd/config.json"
 if [[ -f "$configuration" ]]; then
   "$binary" install
   print "shotd $version installed as an upgrade. Your existing configuration was preserved."
+elif [[ -t 0 ]]; then
+  "$binary" setup
 else
   "$binary" setup --yes
 fi

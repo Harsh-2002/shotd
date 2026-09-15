@@ -225,6 +225,17 @@ public struct CommandRunner: Sendable {
         if !exists {
             if let watchDirectory { configuration.watch.directory = watchDirectory }
             if let outputDirectory { configuration.output.directory = outputDirectory }
+            if !acceptDefaults, isatty(STDIN_FILENO) == 1 {
+                print("\nWelcome to shotd. Press Return to keep a suggested folder.")
+                if watchDirectory == nil {
+                    let answer = try SecureTerminalInput.read(prompt: "Where should macOS save screenshots? [\(configuration.watch.directory)] ", secret: false, allowEmpty: true)
+                    if !answer.isEmpty { configuration.watch.directory = answer }
+                }
+                if outputDirectory == nil {
+                    let answer = try SecureTerminalInput.read(prompt: "Where should shotd save finished media? [\(configuration.output.directory)] ", secret: false, allowEmpty: true)
+                    if !answer.isEmpty { configuration.output.directory = answer }
+                }
+            }
             try await loader.write(configuration)
         }
 

@@ -3134,7 +3134,7 @@ The daemon should become something the user eventually forgets is running.
 
 # 85. Distribution And Updates
 
-`shotd` is distributed as a Developer ID-signed, notarized Apple-silicon (`arm64`) release archive. Versions use the immutable calendar tag format:
+`shotd` is distributed as an Apple-silicon (`arm64`) release archive. Versions use the immutable calendar tag format:
 
 ```text
 vYYYY.MM.DD
@@ -3148,12 +3148,16 @@ The installer runs only for the logged-in GUI user. It downloads the matching ar
 
 If `config.json` is absent, it starts the minimal `shotd setup` onboarding flow. If it exists, installation is an upgrade and preserves configuration, state, Keychain credentials, logs, imported backgrounds, and output files.
 
-`shotd update --check` reports the latest GitHub Release. `shotd update` verifies the archive checksum and requires the downloaded binary to have the same Developer ID team as the installed binary before it replaces anything.
+First-time interactive setup asks for the screenshot watch folder and finished-media output folder, offering safe `~/Pictures/shotd/...` defaults. It then explains the macOS Screenshot save-location setting and asks before installing the per-user LaunchAgent. Non-interactive setup uses explicit options or the defaults.
+
+`shotd update --check` reports the latest GitHub Release. `shotd update` verifies the archive checksum before it replaces anything. When Developer ID signing is available, it also requires the downloaded binary to have the same Developer ID team as the installed binary.
 
 No installer or updater may use `sudo`, change a shell profile, write a system-wide binary path, or install a LaunchDaemon.
 
 ## Release Lifecycle
 
-Release publication is initiated only by manually pushing a `vYYYY.MM.DD` tag. The GitHub Actions workflow builds and validates the Apple-silicon archive, signs and notarizes it, publishes the new release and its `SHA256SUMS`, then retires every older published GitHub Release.
+Release publication is initiated only by manually pushing a `vYYYY.MM.DD` tag. The GitHub Actions workflow builds and validates the Apple-silicon archive, applies an ad-hoc signature, publishes the new release and its `SHA256SUMS`, then retires every older published GitHub Release.
 
 There is exactly one active published release at a time. Older Git tags remain for source history, but their GitHub Release pages and downloadable assets are deleted only after the new release is successfully published. A failed build, signing, notarization, or publication must leave the existing active release untouched.
+
+Developer ID signing and notarization are optional hardening, not release prerequisites. When no Apple Developer credentials are configured, checksum verification and GitHub release access are the trust boundary; users may need to approve a browser-downloaded, non-notarized archive in macOS before first use. If credentials are added later, releases use the configured stable Developer ID and notarization automatically.
