@@ -9,11 +9,10 @@
 
 ## Install
 
-Open Terminal, paste these two lines, and press Return:
+Open Terminal, paste this command, and press Return:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Harsh-2002/shotd/main/Packaging/install.sh -o /tmp/shotd-install.sh
-zsh /tmp/shotd-install.sh
+sh -c "$(curl -fsSL https://raw.githubusercontent.com/Harsh-2002/shotd/main/Packaging/install.sh)"
 ```
 
 The installer verifies the download and starts a guided setup. Press Return to accept the recommended folders, then follow the instruction shown for macOS Screenshot.
@@ -32,6 +31,12 @@ shotd doctor
 shotd setup
 shotd update --check
 shotd update
+```
+
+Optional zsh completion:
+
+```bash
+mkdir -p ~/.zfunc && shotd completions zsh > ~/.zfunc/_shotd
 ```
 
 If `shotd` is not on your PATH, use:

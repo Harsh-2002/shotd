@@ -3146,9 +3146,13 @@ The installer runs only for the logged-in GUI user. It downloads the matching ar
 ~/Library/Application Support/shotd/bin/shotd
 ```
 
+The public installer uses POSIX `sh` syntax, fails clearly on unsupported Unix platforms, and currently installs only the Apple-silicon macOS artifact.
+
 If `config.json` is absent, it starts the minimal `shotd setup` onboarding flow. If it exists, installation is an upgrade and preserves configuration, state, Keychain credentials, logs, imported backgrounds, and output files.
 
 First-time interactive setup asks for the screenshot watch folder and finished-media output folder, offering safe `~/Pictures/shotd/...` defaults. It then explains the macOS Screenshot save-location setting and asks before installing the per-user LaunchAgent. Non-interactive setup uses explicit options or the defaults.
+
+The CLI provides native zsh completion output through `shotd completions zsh`; installation does not modify shell profiles automatically.
 
 `shotd update --check` reports the latest GitHub Release. `shotd update` verifies the archive checksum before it replaces anything. When Developer ID signing is available, it also requires the downloaded binary to have the same Developer ID team as the installed binary.
 

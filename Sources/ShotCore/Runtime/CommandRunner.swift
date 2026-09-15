@@ -104,6 +104,8 @@ public struct CommandRunner: Sendable {
                 signals.cancel()
             case ["version"]:
                 print("shotd \(BuildInfo.version)")
+            case ["completions", "zsh"]:
+                print(Self.zshCompletion)
             case _ where arguments.first == "setup":
                 try await setup(paths: paths, loader: loader)
             case ["update", "--check"]:
@@ -302,6 +304,51 @@ public struct CommandRunner: Sendable {
       storage set-credentials <name> | storage set-development-credentials
       storage test | storage multipart-test
       codecs | doctor | update [--check] | version
+      completions zsh
+    """
+
+    private static let zshCompletion = """
+    #compdef shotd
+
+    _shotd() {
+      local -a commands
+      commands=(
+        'setup:configure and install shotd'
+        'install:install or upgrade the LaunchAgent'
+        'uninstall:remove the LaunchAgent and binary'
+        'start:start the LaunchAgent'
+        'stop:stop the LaunchAgent'
+        'restart:restart the LaunchAgent'
+        'status:show LaunchAgent status'
+        'run:run the daemon in the foreground'
+        'process:process one media file'
+        'config:manage configuration'
+        'background:manage backgrounds'
+        'storage:manage S3 storage'
+        'codecs:list image codecs'
+        'doctor:check the installation'
+        'update:check for or install updates'
+        'version:show the installed version'
+        'completions:generate shell completions'
+      )
+
+      if (( CURRENT == 2 )); then
+        _describe 'command' commands
+        return
+      fi
+
+      case "$words[2]" in
+        setup) _arguments '--yes[accept defaults]' '--no-start[do not install the LaunchAgent]' '--watch-directory[set screenshot folder]:directory:_directories' '--output-directory[set output folder]:directory:_directories' ;;
+        process) _files ;;
+        config) _values 'command' path init validate ;;
+        background) _arguments '1:command:(import)' '2:image file:_files' ;;
+        storage) _values 'command' set-credentials set-development-credentials test multipart-test ;;
+        update) _arguments '--check[check without installing]' ;;
+        completions) _values 'shell' zsh ;;
+      esac
+    }
+
+    _shotd "$@"
     """
 }
 
