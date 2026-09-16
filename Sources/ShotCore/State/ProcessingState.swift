@@ -29,13 +29,59 @@ public struct ProcessedSource: Codable, Equatable, Sendable {
 }
 
 public struct ProcessingState: Codable, Sendable {
-    public var records: [String: ProcessedSource]
+    public static let currentSchemaVersion = 2
 
-    public init(records: [String: ProcessedSource] = [:]) {
+    public var schemaVersion: Int
+    public var watchDirectory: String?
+    public var observed: [String: SourceFingerprint]
+    public var pending: [String: SourceFingerprint]
+    public var pendingDeletions: [String: SourceFingerprint]
+    public var records: [String: ProcessedSource]
+    public var requiresBaseline: Bool
+
+    public init(
+        schemaVersion: Int = currentSchemaVersion,
+        watchDirectory: String? = nil,
+        observed: [String: SourceFingerprint] = [:],
+        pending: [String: SourceFingerprint] = [:],
+        pendingDeletions: [String: SourceFingerprint] = [:],
+        records: [String: ProcessedSource] = [:],
+        requiresBaseline: Bool = true
+    ) {
+        self.schemaVersion = schemaVersion
+        self.watchDirectory = watchDirectory
+        self.observed = observed
+        self.pending = pending
+        self.pendingDeletions = pendingDeletions
         self.records = records
+        self.requiresBaseline = requiresBaseline
     }
 
     public func hasProcessed(_ fingerprint: SourceFingerprint) -> Bool {
         records[fingerprint.path]?.fingerprint == fingerprint
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, watchDirectory, observed, pending, pendingDeletions, records, requiresBaseline
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        let version = try values.decodeIfPresent(Int.self, forKey: .schemaVersion)
+        if let version, version > Self.currentSchemaVersion {
+            throw PersistentStateError.unsupportedSchema(found: version, supported: Self.currentSchemaVersion)
+        }
+        self.init(
+            schemaVersion: Self.currentSchemaVersion,
+            watchDirectory: try values.decodeIfPresent(String.self, forKey: .watchDirectory),
+            observed: try values.decodeIfPresent([String: SourceFingerprint].self, forKey: .observed) ?? [:],
+            pending: try values.decodeIfPresent([String: SourceFingerprint].self, forKey: .pending) ?? [:],
+            pendingDeletions: try values.decodeIfPresent([String: SourceFingerprint].self, forKey: .pendingDeletions) ?? [:],
+            records: try values.decodeIfPresent([String: ProcessedSource].self, forKey: .records) ?? [:],
+            // Legacy state has completion records but no full directory inventory, so migration must baseline safely.
+            requiresBaseline: version == Self.currentSchemaVersion
+                ? try values.decodeIfPresent(Bool.self, forKey: .requiresBaseline) ?? true
+                : true
+        )
     }
 }

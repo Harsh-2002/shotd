@@ -29,6 +29,11 @@ public enum ConfigValidator {
         if let quality = configuration.image.quality, !(0...100).contains(quality) {
             throw ShotdError.invalidConfiguration("image.quality must be between 0 and 100.")
         }
+        if configuration.source.retention == .deleteAfterSuccess,
+           configuration.source.deleteRequiresUpload,
+           configuration.storage == nil {
+            throw ShotdError.invalidConfiguration("source.deleteRequiresUpload requires storage configuration.")
+        }
         try validate(background: configuration.background, paths: paths, allowDesktop: true)
         if let storage = configuration.storage {
             guard let endpoint = URL(string: storage.endpoint), let scheme = endpoint.scheme?.lowercased(), scheme == "https" || (scheme == "http" && endpoint.host() == "localhost") else {

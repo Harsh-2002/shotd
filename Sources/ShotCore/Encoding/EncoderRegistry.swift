@@ -27,6 +27,10 @@ public final class EncoderRegistry {
     }
 
     public func encode(_ image: CGImage, configuration: ImageConfiguration, sourceTypeIdentifier: String? = nil) throws -> EncodedImage {
+        if configuration.format == .preserve,
+           ["public.tiff", "public.tif"].contains(sourceTypeIdentifier ?? "") {
+            return try encodeTIFF(image)
+        }
         let requested = try resolvedFormat(for: configuration, sourceTypeIdentifier: sourceTypeIdentifier)
         if let encoder = encoders[requested], supports(configuration, with: encoder.availability) {
             return try encoder.encode(image, configuration: configuration)
@@ -57,6 +61,19 @@ public final class EncoderRegistry {
         guard availability.available else { return false }
         if configuration.compression == .lossless { return availability.lossless }
         return true
+    }
+
+    private func encodeTIFF(_ image: CGImage) throws -> EncodedImage {
+        let buffer = NSMutableData()
+        guard supportedTypes.contains("public.tiff"),
+              let destination = CGImageDestinationCreateWithData(buffer, "public.tiff" as CFString, 1, nil) else {
+            throw ShotdError.unsupported("TIFF preservation is unavailable on this system.")
+        }
+        CGImageDestinationAddImage(destination, image, nil)
+        guard CGImageDestinationFinalize(destination) else {
+            throw ShotdError.processing("Unable to encode TIFF output.")
+        }
+        return EncodedImage(data: buffer as Data, format: .init(fileExtension: "tif", mimeType: "image/tiff"))
     }
 
     private static func register(_ format: ImageFormat, identifier: String, lossless: Bool, types: Set<String>, into encoders: inout [ImageFormat: any ImageEncoding]) {

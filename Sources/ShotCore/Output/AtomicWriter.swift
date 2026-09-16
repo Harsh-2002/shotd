@@ -37,4 +37,16 @@ public enum AtomicWriter {
             throw ShotdError.filesystem("Unable to atomically publish \(destination.path): \(error.localizedDescription)")
         }
     }
+
+    public static func copyFile(at source: URL, to destination: URL, fileManager: FileManager = .default) throws {
+        try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let temporary = destination.deletingLastPathComponent().appending(path: ".\(destination.lastPathComponent).\(UUID().uuidString).tmp")
+        do {
+            try fileManager.copyItem(at: source, to: temporary)
+            try replaceFile(at: temporary, with: destination, fileManager: fileManager)
+        } catch {
+            try? fileManager.removeItem(at: temporary)
+            throw ShotdError.filesystem("Unable to atomically copy \(source.path) to \(destination.path): \(error.localizedDescription)")
+        }
+    }
 }

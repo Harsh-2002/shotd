@@ -48,6 +48,16 @@ final class ImagePipelineTests: XCTestCase {
         XCTAssertEqual(encoded.format.fileExtension, "png")
     }
 
+    func testPreserveTIFFProducesTIFFBytes() throws {
+        var configuration = ImageConfiguration(format: .preserve)
+        configuration.compression = nil
+        let encoded = try EncoderRegistry().encode(try testImage(), configuration: configuration, sourceTypeIdentifier: "public.tiff")
+        let source = try XCTUnwrap(CGImageSourceCreateWithData(encoded.data as CFData, nil))
+
+        XCTAssertEqual(encoded.format.fileExtension, "tif")
+        XCTAssertEqual(CGImageSourceGetType(source) as String?, "public.tiff")
+    }
+
     private func writeJPEG(width: Int, height: Int, orientation: CGImagePropertyOrientation) throws -> URL {
         let url = FileManager.default.temporaryDirectory.appending(path: "shotd-orientation-\(UUID().uuidString).jpg")
         guard let destination = CGImageDestinationCreateWithURL(url as CFURL, "public.jpeg" as CFString, 1, nil) else {

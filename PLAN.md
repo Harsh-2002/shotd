@@ -18,8 +18,8 @@ These are invariants:
 - Still-image output and image clipboard publication are serialized. Video uses an independent serial queue.
 - Local output and clipboard readiness never wait for storage delivery.
 - Finished files are written atomically; partial output must not be exposed.
-- Uploads and persisted retries are asynchronous and bounded. Their failure does not invalidate local success.
-- Files are stabilized and fingerprinted so duplicate events and daemon restarts do not duplicate work.
+- Upload intent and retries are persisted before asynchronous bounded delivery. Their failure does not invalidate local success.
+- First enrollment and watch-folder changes baseline existing media without processing it. Later captures are stabilized and fingerprinted, and trusted restarts recover pending work without replaying history.
 - Watch and output directories must be non-empty locations under the current user's home and must not be equal or contain one another.
 - Keeping sources is the default. Deletion or replacement occurs only after its configured success condition and a final fingerprint check. Replacement preserves source format and cannot create a watcher loop.
 - Invalid configuration changes do not replace the active configuration.

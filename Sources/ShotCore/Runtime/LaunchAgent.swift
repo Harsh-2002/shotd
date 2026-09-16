@@ -25,6 +25,8 @@ public enum LaunchAgent {
         }
         try fileManager.createDirectory(at: paths.launchAgentsDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let plist = plistURL(paths: paths)
+        let previousPlist = fileManager.fileExists(atPath: plist.path) ? try Data(contentsOf: plist) : nil
+        let binaryExisted = fileManager.fileExists(atPath: binary.path)
         let content: [String: Any] = [
             "Label": label,
             "ProgramArguments": [binary.path, "run"],
@@ -36,7 +38,12 @@ public enum LaunchAgent {
             "StandardErrorPath": paths.logsDirectory.appending(path: "daemon-error.log").path
         ]
         let data = try PropertyListSerialization.data(fromPropertyList: content, format: .xml, options: 0)
-        _ = try runLaunchctl(["bootout", domain(paths), plist.path], allowingFailure: true)
+        do {
+            try stop(paths: paths)
+        } catch {
+            try? fileManager.removeItem(at: staged)
+            throw error
+        }
         let backup = binaryDirectory.appending(path: "shotd.previous")
         do {
             if replacementNeeded {
@@ -57,16 +64,30 @@ public enum LaunchAgent {
             if fileManager.fileExists(atPath: backup.path) {
                 try? fileManager.removeItem(at: binary)
                 try? fileManager.moveItem(at: backup, to: binary)
+            } else if !binaryExisted {
+                try? fileManager.removeItem(at: binary)
+            }
+            if let previousPlist {
+                try? AtomicWriter.write(previousPlist, to: plist)
                 _ = try? runLaunchctl(["bootstrap", domain(paths), plist.path], allowingFailure: true)
+            } else {
+                try? fileManager.removeItem(at: plist)
             }
             throw error
         }
     }
 
     public static func uninstall(paths: ApplicationPaths) throws {
-        _ = try runLaunchctl(["bootout", domain(paths), plistURL(paths: paths).path], allowingFailure: true)
-        try? FileManager.default.removeItem(at: plistURL(paths: paths))
-        try? FileManager.default.removeItem(at: paths.applicationSupport.appending(path: "bin/shotd"))
+        try stop(paths: paths)
+        try removeInstallation(paths: paths)
+    }
+
+    public static func removeInstallation(paths: ApplicationPaths) throws {
+        let fileManager = FileManager.default
+        let plist = plistURL(paths: paths)
+        let binary = paths.applicationSupport.appending(path: "bin/shotd")
+        if fileManager.fileExists(atPath: plist.path) { try fileManager.removeItem(at: plist) }
+        if fileManager.fileExists(atPath: binary.path) { try fileManager.removeItem(at: binary) }
     }
 
     public static func start(paths: ApplicationPaths) throws {
@@ -81,8 +102,10 @@ public enum LaunchAgent {
     }
 
     public static func stop(paths: ApplicationPaths) throws {
+        let status = try runLaunchctl(["print", "\(domain(paths))/\(label)"], allowingFailure: true)
+        guard status.status == 0 else { return }
         let result = try runLaunchctl(["bootout", domain(paths), plistURL(paths: paths).path], allowingFailure: true)
-        guard result.status == 0 || result.output.localizedCaseInsensitiveContains("no such process") else {
+        guard result.status == 0 else {
             throw ShotdError.filesystem("Unable to stop LaunchAgent: \(result.output)")
         }
     }

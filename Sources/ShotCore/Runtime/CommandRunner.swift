@@ -62,7 +62,14 @@ public struct CommandRunner: Sendable {
                 try LaunchAgent.install(paths: paths, executable: try invokedExecutable())
                 Log.info("LaunchAgent installed")
             case ["uninstall"]:
-                try LaunchAgent.uninstall(paths: paths)
+                try LaunchAgent.stop(paths: paths)
+                do {
+                    try await FileTracker(paths: paths).requireBaseline()
+                } catch {
+                    try? LaunchAgent.start(paths: paths)
+                    throw error
+                }
+                try LaunchAgent.removeInstallation(paths: paths)
                 Log.info("LaunchAgent uninstalled")
             case ["start"]:
                 try LaunchAgent.start(paths: paths)
@@ -216,8 +223,17 @@ public struct CommandRunner: Sendable {
         var credentialRollback: (name: String, previous: StorageCredentials?)?
         var committed = false
         defer {
-            if !committed, let importedBackground {
-                try? FileManager.default.removeItem(at: importedBackground)
+            if !committed {
+                if let importedBackground {
+                    try? FileManager.default.removeItem(at: importedBackground)
+                }
+                if let credentialRollback {
+                    if let previous = credentialRollback.previous {
+                        try? CredentialStore.set(previous, named: credentialRollback.name)
+                    } else {
+                        try? CredentialStore.delete(named: credentialRollback.name)
+                    }
+                }
             }
         }
         var index = 1
@@ -294,6 +310,9 @@ public struct CommandRunner: Sendable {
             configuration.storage = storage.configuration
             credentialRollback = storage.credentialRollback
         }
+        if startAfterSetup, !acceptDefaults, isatty(STDIN_FILENO) != 1 {
+            throw ShotdError.invalidArguments("Run `shotd setup --yes` to install non-interactively.")
+        }
         do {
             try await loader.write(configuration)
         } catch {
@@ -335,9 +354,6 @@ public struct CommandRunner: Sendable {
             return
         }
         if !acceptDefaults {
-            guard isatty(STDIN_FILENO) == 1 else {
-                throw ShotdError.invalidArguments("Run `shotd setup --yes` to install non-interactively.")
-            }
             let answer = try SecureTerminalInput.read(prompt: "Start shotd automatically now? [Y/n] ", secret: false, allowEmpty: true)
             if !answer.isEmpty, !["y", "yes"].contains(answer.lowercased()) {
                 committed = true
@@ -357,6 +373,17 @@ public struct CommandRunner: Sendable {
                 }
             } catch let rollbackError {
                 throw ShotdError.filesystem("Automatic startup failed and settings rollback also failed: \(rollbackError.localizedDescription)")
+            }
+            if let credentialRollback {
+                do {
+                    if let previous = credentialRollback.previous {
+                        try CredentialStore.set(previous, named: credentialRollback.name)
+                    } else {
+                        try CredentialStore.delete(named: credentialRollback.name)
+                    }
+                } catch let rollbackError {
+                    throw ShotdError.storage("Automatic startup failed and Keychain rollback also failed: \(rollbackError.localizedDescription)")
+                }
             }
             throw error
         }

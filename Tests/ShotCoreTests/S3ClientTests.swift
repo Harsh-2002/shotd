@@ -68,6 +68,36 @@ final class S3ClientTests: XCTestCase {
         }
     }
 
+    func testMultipartCompletionRejectsHTTP200ErrorDocument() async {
+        let body = Data("<Error><Code>InternalError</Code><Message>completion failed</Message></Error>".utf8)
+        let endpoint = MockURLProtocol.register(statuses: ["POST": 200], bodies: ["POST": body])
+        defer { MockURLProtocol.remove(endpoint: endpoint) }
+        let client = makeClient(endpoint: endpoint)
+
+        await assertStorageError("S3 complete multipart upload failed: completion failed.") {
+            try await client.completeMultipartUpload(key: "recording.mp4", uploadID: "upload", parts: [(1, "etag")])
+        }
+    }
+
+    func testMultipartCompletionAcceptsCompletionResult() async throws {
+        let body = Data("<CompleteMultipartUploadResult><Location>object</Location></CompleteMultipartUploadResult>".utf8)
+        let endpoint = MockURLProtocol.register(statuses: ["POST": 200], bodies: ["POST": body])
+        defer { MockURLProtocol.remove(endpoint: endpoint) }
+
+        try await makeClient(endpoint: endpoint).completeMultipartUpload(key: "recording.mp4", uploadID: "upload", parts: [(1, "etag")])
+    }
+
+    func testLegacyPendingUploadDecodesWithSafePostUploadDefaults() throws {
+        let id = UUID()
+        let data = Data("{\"id\":\"\(id.uuidString)\",\"localPath\":\"/tmp/output\",\"objectKey\":\"key\",\"contentType\":\"image/png\",\"attempts\":1,\"nextAttempt\":0}".utf8)
+
+        let upload = try JSONDecoder().decode(PendingUpload.self, from: data)
+
+        XCTAssertFalse(upload.deleteSourceAfterUpload)
+        XCTAssertNil(upload.sourcePath)
+        XCTAssertNil(upload.sourceFingerprint)
+    }
+
     private func makeClient(endpoint: String) -> S3Client {
         let sessionConfiguration = URLSessionConfiguration.ephemeral
         sessionConfiguration.protocolClasses = [MockURLProtocol.self]
@@ -91,6 +121,7 @@ final class S3ClientTests: XCTestCase {
 private final class MockURLProtocol: URLProtocol, @unchecked Sendable {
     private struct Scenario {
         let statuses: [String: Int]
+        let bodies: [String: Data]
         var requests: [URLRequest] = []
     }
 
@@ -101,10 +132,10 @@ private final class MockURLProtocol: URLProtocol, @unchecked Sendable {
 
     private static let state = State()
 
-    static func register(statuses: [String: Int]) -> String {
+    static func register(statuses: [String: Int], bodies: [String: Data] = [:]) -> String {
         let endpoint = "https://\(UUID().uuidString.lowercased()).example.test"
         state.lock.lock()
-        state.scenarios[endpoint] = Scenario(statuses: statuses)
+        state.scenarios[endpoint] = Scenario(statuses: statuses, bodies: bodies)
         state.lock.unlock()
         return endpoint
     }
@@ -139,6 +170,7 @@ private final class MockURLProtocol: URLProtocol, @unchecked Sendable {
         Self.state.lock.lock()
         Self.state.scenarios[endpoint]?.requests.append(request)
         let status = Self.state.scenarios[endpoint]?.statuses[request.httpMethod ?? ""]
+        let body = Self.state.scenarios[endpoint]?.bodies[request.httpMethod ?? ""] ?? Data()
         Self.state.lock.unlock()
 
         guard let status, let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: nil, headerFields: nil) else {
@@ -146,7 +178,7 @@ private final class MockURLProtocol: URLProtocol, @unchecked Sendable {
             return
         }
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: Data())
+        client?.urlProtocol(self, didLoad: body)
         client?.urlProtocolDidFinishLoading(self)
     }
 

@@ -16,10 +16,17 @@ public actor Daemon {
     private var configWatcher: DirectoryWatcher?
     private var pendingImages: [URL] = []
     private var imageProcessing = false
+    private var imageTask: Task<Void, Never>?
     private var pendingVideos: [VideoJob] = []
     private var videoProcessing = false
+    private var videoTask: Task<Void, Never>?
     private var retryTask: Task<Void, Never>?
+    private var deliveryTask: Task<Void, Never>?
     private var running = false
+    private var starting = false
+    private var reloading = false
+    private var reloadRequested = false
+    private var lifecycleGeneration = 0
     private var stopWaiters: [CheckedContinuation<Void, Never>] = []
 
     public init(paths: ApplicationPaths) {
@@ -30,23 +37,18 @@ public actor Daemon {
     }
 
     public func start() async throws {
-        guard !running else { return }
+        guard !running, !starting else { return }
+        starting = true
+        lifecycleGeneration += 1
+        let generation = lifecycleGeneration
+        defer { starting = false }
         let loaded = try await loader.loadOrCreateDefault()
-        let inbox = paths.expandUserPath(loaded.watch.directory).standardizedFileURL
-        let output = paths.expandUserPath(loaded.output.directory).standardizedFileURL
+        guard generation == lifecycleGeneration else { throw CancellationError() }
+        let inbox = paths.expandUserPath(loaded.watch.directory).standardizedFileURL.resolvingSymlinksInPath()
+        let output = paths.expandUserPath(loaded.output.directory).standardizedFileURL.resolvingSymlinksInPath()
         guard inbox != output else { throw ShotdError.invalidConfiguration("watch.directory and output.directory must be different.") }
         try FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        configuration = loaded
-        await prewarmBackground(configuration: loaded)
-        await storageDelivery.retryDueUploads(configuration: loaded.storage)
-        retryTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(30))
-                guard !Task.isCancelled else { return }
-                await self?.retryDueUploads()
-            }
-        }
 
         let inboxWatcher = makeInboxWatcher(directory: inbox)
         let configurationFile = paths.configuration.standardizedFileURL
@@ -54,25 +56,63 @@ public actor Daemon {
             guard files.contains(where: { $0.standardizedFileURL == configurationFile }) else { return }
             Task { await self?.reloadConfiguration() }
         }
-        try inboxWatcher.start()
-        try configWatcher.start()
-        self.inboxWatcher = inboxWatcher
-        self.configWatcher = configWatcher
-        running = true
-        await enqueueStartupFiles(try inboxWatcher.currentFiles(), configuration: loaded)
+        do {
+            try await reconcile(try inboxWatcher.currentFiles(), directory: inbox)
+            guard generation == lifecycleGeneration else { throw CancellationError() }
+            configuration = loaded
+            try inboxWatcher.start()
+            self.inboxWatcher = inboxWatcher
+            running = true
+            try configWatcher.start()
+            self.configWatcher = configWatcher
+            try await scan(directory: inbox)
+            await retryPendingDeletions()
+        } catch {
+            inboxWatcher.stop()
+            configWatcher.stop()
+            self.inboxWatcher = nil
+            self.configWatcher = nil
+            configuration = nil
+            pendingImages.removeAll()
+            pendingVideos.removeAll()
+            running = false
+            throw error
+        }
+        await prewarmBackground(configuration: loaded)
+        guard running, generation == lifecycleGeneration else { return }
+        retryTask = Task { [weak self] in
+            await self?.startDeliveryIfNeeded()
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(30))
+                guard !Task.isCancelled else { return }
+                await self?.startDeliveryIfNeeded()
+            }
+        }
         Log.info("shotd is watching \(inbox.path)")
     }
 
-    public func stop() {
+    public func stop() async {
+        if starting { lifecycleGeneration += 1 }
+        guard running || imageTask != nil || videoTask != nil || deliveryTask != nil else { return }
+        running = false
         inboxWatcher?.stop()
         configWatcher?.stop()
         inboxWatcher = nil
         configWatcher = nil
         retryTask?.cancel()
         retryTask = nil
+        deliveryTask?.cancel()
+        let activeImage = imageTask
+        let activeVideo = videoTask
+        let activeDelivery = deliveryTask
+        await activeImage?.value
+        await activeVideo?.value
+        await activeDelivery?.value
+        imageTask = nil
+        videoTask = nil
+        deliveryTask = nil
         pendingImages.removeAll()
         pendingVideos.removeAll()
-        running = false
         let waiters = stopWaiters
         stopWaiters.removeAll()
         waiters.forEach { $0.resume() }
@@ -80,9 +120,14 @@ public actor Daemon {
     }
 
     public func waitForever() async {
+        guard running else { return }
         await withTaskCancellationHandler(operation: {
             await withCheckedContinuation { continuation in
-                stopWaiters.append(continuation)
+                if running {
+                    stopWaiters.append(continuation)
+                } else {
+                    continuation.resume()
+                }
             }
         }, onCancel: {
             Task { await self.stop() }
@@ -90,24 +135,51 @@ public actor Daemon {
     }
 
     private func reloadConfiguration() async {
+        guard !reloading else {
+            reloadRequested = true
+            return
+        }
+        reloading = true
+        defer {
+            reloading = false
+            if reloadRequested {
+                reloadRequested = false
+                Task { await self.reloadConfiguration() }
+            }
+        }
         do {
             guard running else { return }
             let loaded = try await loader.load()
-            let inbox = paths.expandUserPath(loaded.watch.directory).standardizedFileURL
-            let output = paths.expandUserPath(loaded.output.directory).standardizedFileURL
+            guard running else { return }
+            let inbox = paths.expandUserPath(loaded.watch.directory).standardizedFileURL.resolvingSymlinksInPath()
+            let output = paths.expandUserPath(loaded.output.directory).standardizedFileURL.resolvingSymlinksInPath()
             try FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
 
-            let currentInbox = configuration.map { paths.expandUserPath($0.watch.directory).standardizedFileURL }
+            let currentInbox = configuration.map { paths.expandUserPath($0.watch.directory).standardizedFileURL.resolvingSymlinksInPath() }
             if inbox != currentInbox {
                 let replacement = makeInboxWatcher(directory: inbox)
-                try replacement.start()
                 let startupFiles = try replacement.currentFiles()
+                try replacement.start()
+                do {
+                    try await reconcile(startupFiles, directory: inbox)
+                } catch {
+                    replacement.stop()
+                    throw error
+                }
+                guard running else {
+                    replacement.stop()
+                    return
+                }
                 let previous = inboxWatcher
                 inboxWatcher = replacement
                 configuration = loaded
                 previous?.stop()
-                await enqueueStartupFiles(startupFiles, configuration: loaded)
+                do {
+                    try await scan(directory: inbox)
+                } catch {
+                    Log.processing.error("Unable to reconcile the new watch directory: \(error.localizedDescription, privacy: .public)")
+                }
             } else {
                 configuration = loaded
             }
@@ -122,11 +194,35 @@ public actor Daemon {
     private func retryDueUploads() async {
         guard running, let configuration else { return }
         await storageDelivery.retryDueUploads(configuration: configuration.storage)
+        await retryPendingDeletions()
+    }
+
+    private func startDeliveryIfNeeded() {
+        guard running, deliveryTask == nil else { return }
+        deliveryTask = Task { [weak self] in
+            await self?.runDeliveryPass()
+        }
+    }
+
+    private func runDeliveryPass() async {
+        await retryDueUploads()
+        deliveryTask = nil
     }
 
     private func makeInboxWatcher(directory: URL) -> DirectoryWatcher {
-        DirectoryWatcher(directory: directory) { [weak self] files in
-            Task { await self?.enqueue(files) }
+        DirectoryWatcher(directory: directory) { [weak self] _ in
+            Task { await self?.handle(directory: directory) }
+        }
+    }
+
+    private func handle(directory: URL) async {
+        guard running,
+              let configuration,
+              paths.expandUserPath(configuration.watch.directory).standardizedFileURL.resolvingSymlinksInPath() == directory else { return }
+        do {
+            try await scan(directory: directory)
+        } catch {
+            Log.processing.error("Unable to reconcile watched files: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -149,46 +245,31 @@ public actor Daemon {
         startNextImageIfNeeded()
     }
 
-    private func enqueueStartupFiles(_ files: [URL], configuration: ShotdConfiguration) async {
-        let output = OutputManager(directory: paths.expandUserPath(configuration.output.directory))
-        var pending: [URL] = []
-        for source in files {
-            guard let format = expectedFormat(for: source, configuration: configuration) else {
-                pending.append(source)
-                continue
-            }
-            let destination = output.destination(for: source, format: format)
-            let sourceDate = try? source.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-            let outputDate = try? destination.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-            guard let sourceDate, let outputDate, outputDate >= sourceDate,
-                  let fingerprint = try? stabilizer.fingerprint(source) else {
-                pending.append(source)
-                continue
-            }
-            try? await tracker.processed(.init(fingerprint: fingerprint, outputPath: destination.path))
-        }
-        enqueue(pending)
+    private func reconcile(_ files: [URL], directory: URL) async throws {
+        let supported = files.filter { Self.supportedExtensions.contains($0.pathExtension.lowercased()) }
+        let fingerprints = try supported.map { try stabilizer.fingerprint($0) }
+        let pending = try await tracker.reconcile(directory: directory, fingerprints: fingerprints)
+        enqueue(pending.map { URL(filePath: $0.path) })
     }
 
-    private func expectedFormat(for source: URL, configuration: ShotdConfiguration) -> OutputFormat? {
-        switch source.pathExtension.lowercased() {
-        case "mov", "mp4":
-            return OutputFormat.video(for: configuration.video.format)
-        default:
-            return OutputFormat.image(for: configuration.image.format)
-        }
+    private func scan(directory: URL) async throws {
+        guard let watcher = inboxWatcher else { return }
+        try await reconcile(try watcher.currentFiles(), directory: directory)
     }
+
+    private static let supportedExtensions: Set<String> = ["png", "jpg", "jpeg", "heic", "webp", "avif", "tif", "tiff", "mov", "mp4"]
 
     private func startNextImageIfNeeded() {
         guard running, !imageProcessing, !pendingImages.isEmpty, let configuration else { return }
         imageProcessing = true
         let source = pendingImages.removeFirst()
-        Task { await processImage(source, configuration: configuration) }
+        imageTask = Task { await processImage(source, configuration: configuration) }
     }
 
     private func processImage(_ source: URL, configuration: ShotdConfiguration) async {
         defer {
             imageProcessing = false
+            imageTask = nil
             startNextImageIfNeeded()
         }
         var fingerprint: SourceFingerprint?
@@ -208,17 +289,27 @@ public actor Daemon {
                 }
                 let output = OutputManager(directory: paths.expandUserPath(configuration.output.directory))
                 let key = output.objectKey(for: source, kind: .image, format: result.format, prefix: configuration.storage?.paths.images ?? "screenshots")
-                try await tracker.processed(.init(fingerprint: stableFingerprint, outputPath: result.outputURL.path, objectKey: key))
-                scheduleDelivery(file: result.outputURL, source: source, fingerprint: stableFingerprint, objectKey: key, contentType: result.format.mimeType, configuration: configuration)
+                try await queueDelivery(file: result.outputURL, source: source, fingerprint: stableFingerprint, objectKey: key, contentType: result.format.mimeType, configuration: configuration)
                 if configuration.source.retention == .replaceAfterSuccess {
-                    try await replaceSource(result.outputURL, source: source, fingerprint: stableFingerprint, objectKey: key)
-                    Log.info("Processed and replaced screenshot: \(source.lastPathComponent)")
+                    if try await replaceSource(result.outputURL, source: source, fingerprint: stableFingerprint, objectKey: key) {
+                        Log.info("Processed and replaced screenshot: \(source.lastPathComponent)")
+                    } else {
+                        Log.info("Processed screenshot; edited source was kept: \(source.lastPathComponent) -> \(result.outputURL.path)")
+                    }
                 } else {
+                    let deleteLocally = configuration.source.retention == .deleteAfterSuccess && !configuration.source.deleteRequiresUpload
+                    try await tracker.processed(.init(fingerprint: stableFingerprint, outputPath: result.outputURL.path, objectKey: key), deleteSource: deleteLocally)
+                    if deleteLocally { await deleteSourceIfReady(stableFingerprint) }
                     Log.info("Processed screenshot: \(source.lastPathComponent) -> \(result.outputURL.path)")
                 }
+                triggerDelivery()
                 return
             case .video:
-                pendingVideos.append(.init(source: source, configuration: configuration, fingerprint: stableFingerprint))
+                var videoConfiguration = configuration
+                if configuration.source.retention == .replaceAfterSuccess {
+                    videoConfiguration.video.format = source.pathExtension.lowercased() == "mov" ? .mov : .mp4
+                }
+                pendingVideos.append(.init(source: source, configuration: videoConfiguration, fingerprint: stableFingerprint))
                 startNextVideoIfNeeded()
                 return
             }
@@ -232,44 +323,95 @@ public actor Daemon {
         guard running, !videoProcessing, !pendingVideos.isEmpty else { return }
         videoProcessing = true
         let job = pendingVideos.removeFirst()
-        Task { await processVideo(job) }
+        videoTask = Task { await processVideo(job) }
     }
 
     private func processVideo(_ job: VideoJob) async {
         defer {
             videoProcessing = false
+            videoTask = nil
             startNextVideoIfNeeded()
         }
         do {
             let result = try await VideoProcessor(paths: paths).process(sourceURL: job.source, configuration: job.configuration)
             let output = OutputManager(directory: paths.expandUserPath(job.configuration.output.directory))
             let key = output.objectKey(for: job.source, kind: .video, format: result.format, prefix: job.configuration.storage?.paths.videos ?? "recordings")
-            try await tracker.processed(.init(fingerprint: job.fingerprint, outputPath: result.outputURL.path, objectKey: key))
-            scheduleDelivery(file: result.outputURL, source: job.source, fingerprint: job.fingerprint, objectKey: key, contentType: result.format.mimeType, configuration: job.configuration)
-            Log.info("Processed recording: \(job.source.lastPathComponent) -> \(result.outputURL.path)")
+            try await queueDelivery(file: result.outputURL, source: job.source, fingerprint: job.fingerprint, objectKey: key, contentType: result.format.mimeType, configuration: job.configuration)
+            if job.configuration.source.retention == .replaceAfterSuccess {
+                if try await replaceSource(result.outputURL, source: job.source, fingerprint: job.fingerprint, objectKey: key) {
+                    Log.info("Processed and replaced recording: \(job.source.lastPathComponent)")
+                } else {
+                    Log.info("Processed recording; edited source was kept: \(job.source.lastPathComponent) -> \(result.outputURL.path)")
+                }
+            } else {
+                let deleteLocally = job.configuration.source.retention == .deleteAfterSuccess && !job.configuration.source.deleteRequiresUpload
+                try await tracker.processed(.init(fingerprint: job.fingerprint, outputPath: result.outputURL.path, objectKey: key), deleteSource: deleteLocally)
+                if deleteLocally { await deleteSourceIfReady(job.fingerprint) }
+                Log.info("Processed recording: \(job.source.lastPathComponent) -> \(result.outputURL.path)")
+            }
+            triggerDelivery()
         } catch {
             await tracker.failed(job.fingerprint)
             Log.processing.error("Failed to process recording \(job.source.lastPathComponent, privacy: .private): \(error.localizedDescription, privacy: .public)")
         }
     }
 
-    private func scheduleDelivery(file: URL, source: URL, fingerprint: SourceFingerprint, objectKey: String, contentType: String, configuration: ShotdConfiguration) {
-        Task { [storageDelivery] in
-            let delivery = await storageDelivery.deliver(file: file, objectKey: objectKey, contentType: contentType, configuration: configuration.storage)
-            if configuration.source.retention == .deleteAfterSuccess && (!configuration.source.deleteRequiresUpload || delivery.uploaded) {
-                guard (try? FileStabilizer().fingerprint(source)) == fingerprint else { return }
-                try? FileManager.default.removeItem(at: source)
+    private func queueDelivery(file: URL, source: URL, fingerprint: SourceFingerprint, objectKey: String, contentType: String, configuration: ShotdConfiguration) async throws {
+        guard configuration.storage != nil else { return }
+        let deleteAfterUpload = configuration.source.retention == .deleteAfterSuccess && configuration.source.deleteRequiresUpload
+        try await storageDelivery.enqueue(.init(
+            localPath: file.path,
+            objectKey: objectKey,
+            contentType: contentType,
+            sourcePath: deleteAfterUpload ? source.path : nil,
+            sourceFingerprint: deleteAfterUpload ? fingerprint : nil,
+            deleteSourceAfterUpload: deleteAfterUpload
+        ))
+    }
+
+    private func triggerDelivery() {
+        startDeliveryIfNeeded()
+    }
+
+    private func retryPendingDeletions() async {
+        guard running else { return }
+        do {
+            for fingerprint in try await tracker.pendingDeletions() {
+                await deleteSourceIfReady(fingerprint)
             }
+        } catch {
+            Log.processing.error("Unable to load pending source deletions: \(error.localizedDescription, privacy: .public)")
         }
     }
 
-    private func replaceSource(_ output: URL, source: URL, fingerprint: SourceFingerprint, objectKey: String) async throws {
-        guard try stabilizer.fingerprint(source) == fingerprint else {
+    private func deleteSourceIfReady(_ fingerprint: SourceFingerprint) async {
+        let source = URL(filePath: fingerprint.path)
+        guard FileManager.default.fileExists(atPath: source.path) else {
+            try? await tracker.completedDeletion(fingerprint)
+            return
+        }
+        guard (try? stabilizer.fingerprint(source)) == fingerprint else {
+            try? await tracker.completedDeletion(fingerprint)
             Log.processing.notice("Source changed after processing; keeping the edited original.")
             return
         }
-        try AtomicWriter.write(Data(contentsOf: output), to: source)
+        do {
+            try FileManager.default.removeItem(at: source)
+            try await tracker.completedDeletion(fingerprint)
+        } catch {
+            Log.processing.error("Unable to delete source \(source.lastPathComponent, privacy: .private): \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func replaceSource(_ output: URL, source: URL, fingerprint: SourceFingerprint, objectKey: String) async throws -> Bool {
+        guard try stabilizer.fingerprint(source) == fingerprint else {
+            Log.processing.notice("Source changed after processing; keeping the edited original.")
+            try await tracker.processed(.init(fingerprint: fingerprint, outputPath: output.path, objectKey: objectKey))
+            return false
+        }
+        try AtomicWriter.copyFile(at: output, to: source)
         let replacement = try stabilizer.fingerprint(source)
         try await tracker.processed(.init(fingerprint: replacement, outputPath: source.path, objectKey: objectKey))
+        return true
     }
 }

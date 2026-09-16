@@ -73,7 +73,7 @@ public final class VideoProcessor: Sendable {
         let codec: AVVideoCodecType = configuration.video.codec == .h264 ? .h264 : .hevc
 
         let reader = try AVAssetReader(asset: asset)
-        let videoComposition = try await orientedVideoComposition(track: track, dimensions: info.dimensions)
+        let videoComposition = try await orientedVideoComposition(track: track, dimensions: info.dimensions, preserveFrameRate: configuration.video.preserveFrameRate)
         let videoOutput = AVAssetReaderVideoCompositionOutput(videoTracks: [track], videoSettings: [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
         ])
@@ -152,6 +152,9 @@ public final class VideoProcessor: Sendable {
                 throw ShotdError.processing("Unable to append an output video frame.")
             }
         }
+        guard reader.status == .completed else {
+            throw reader.error ?? ShotdError.processing("Video reader did not complete.")
+        }
         videoInput.markAsFinished()
         await writer.finishWriting()
         guard writer.status == .completed else {
@@ -159,11 +162,22 @@ public final class VideoProcessor: Sendable {
         }
     }
 
-    private func orientedVideoComposition(track: AVAssetTrack, dimensions: MediaDimensions) async throws -> AVMutableVideoComposition {
+    private func orientedVideoComposition(track: AVAssetTrack, dimensions: MediaDimensions, preserveFrameRate: Bool) async throws -> AVMutableVideoComposition {
         let composition = AVMutableVideoComposition()
         composition.renderSize = CGSize(width: dimensions.width, height: dimensions.height)
-        let nominalRate = try await track.load(.nominalFrameRate)
-        composition.frameDuration = nominalRate > 0 ? CMTime(value: 1, timescale: Int32(nominalRate.rounded())) : CMTime(value: 1, timescale: 30)
+        if preserveFrameRate {
+            let minimumFrameDuration = try await track.load(.minFrameDuration)
+            if minimumFrameDuration.isValid, minimumFrameDuration.isNumeric, minimumFrameDuration.seconds > 0 {
+                composition.frameDuration = minimumFrameDuration
+            } else {
+                let nominalRate = try await track.load(.nominalFrameRate)
+                composition.frameDuration = nominalRate > 0
+                    ? CMTime(seconds: 1 / Double(nominalRate), preferredTimescale: 60_000)
+                    : CMTime(value: 1, timescale: 30)
+            }
+        } else {
+            composition.frameDuration = CMTime(value: 1, timescale: 30)
+        }
         let duration = try await track.load(.timeRange).duration
         let instruction = AVMutableVideoCompositionInstruction()
         instruction.timeRange = CMTimeRange(start: .zero, duration: duration)

@@ -34,6 +34,10 @@ public actor StorageDelivery {
         }
     }
 
+    public func enqueue(_ upload: PendingUpload) async throws {
+        try await retryQueue.enqueue(upload)
+    }
+
     public func retryDueUploads(configuration: StorageConfiguration?) async {
         guard let configuration else { return }
         do {
@@ -70,6 +74,16 @@ public actor StorageDelivery {
                 return
             }
             _ = try await upload(file: file, objectKey: pending.objectKey, contentType: pending.contentType, configuration: configuration)
+            if pending.deleteSourceAfterUpload,
+               let sourcePath = pending.sourcePath,
+               let sourceFingerprint = pending.sourceFingerprint {
+                let source = URL(filePath: sourcePath)
+                guard (try? FileStabilizer().fingerprint(source)) == sourceFingerprint else {
+                    try await retryQueue.succeeded(pending.id)
+                    return
+                }
+                try FileManager.default.removeItem(at: source)
+            }
             try await retryQueue.succeeded(pending.id)
         } catch {
             do {

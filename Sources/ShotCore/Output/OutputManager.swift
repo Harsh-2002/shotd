@@ -38,7 +38,8 @@ public struct OutputManager: Sendable {
 
     public func destination(for source: URL, format: OutputFormat) -> URL {
         let base = Self.sanitizedBaseName(source.deletingPathExtension().lastPathComponent)
-        return directory.appending(path: "\(base).\(format.fileExtension)")
+        let id = String(UUID().uuidString.prefix(8)).lowercased()
+        return directory.appending(path: "\(base)-\(id).\(format.fileExtension)")
     }
 
     public func objectKey(for source: URL, kind: OutputKind, format: OutputFormat, prefix: String, now: Date = .now) -> String {

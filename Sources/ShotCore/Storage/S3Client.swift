@@ -72,8 +72,16 @@ public actor S3Client {
         request.httpMethod = "POST"
         request.setValue("application/xml", forHTTPHeaderField: "Content-Type")
         let signed = try signer.sign(request, payload: data, credentials: credentials)
-        let (_, response) = try await session.upload(for: signed, from: data)
+        let (responseData, response) = try await session.upload(for: signed, from: data)
         try validate(response, operation: "complete multipart upload")
+        let root = XMLValueParser.rootElement(in: responseData)
+        if root == "Error" {
+            let message = XMLValueParser.value(named: "Message", in: responseData) ?? "unknown S3 error"
+            throw ShotdError.storage("S3 complete multipart upload failed: \(message).")
+        }
+        guard root == "CompleteMultipartUploadResult" else {
+            throw ShotdError.storage("S3 complete multipart upload returned an invalid response.")
+        }
     }
 
     public func abortMultipartUpload(key: String, uploadID: String) async throws {
@@ -132,6 +140,7 @@ private final class XMLValueParser: NSObject, XMLParserDelegate {
     private let target: String
     private var collecting = false
     private var result = ""
+    private var root: String?
 
     private init(target: String) { self.target = target }
 
@@ -142,7 +151,15 @@ private final class XMLValueParser: NSObject, XMLParserDelegate {
         return parser.parse() ? delegate.result : nil
     }
 
+    static func rootElement(in data: Data) -> String? {
+        let delegate = XMLValueParser(target: "")
+        let parser = XMLParser(data: data)
+        parser.delegate = delegate
+        return parser.parse() ? delegate.root : nil
+    }
+
     func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?, qualifiedName qName: String?, attributes attributeDict: [String: String] = [:]) {
+        if root == nil { root = elementName }
         collecting = elementName == target
     }
 

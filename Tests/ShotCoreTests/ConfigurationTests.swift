@@ -80,6 +80,29 @@ final class ConfigurationTests: XCTestCase {
         XCTAssertThrowsError(try ConfigValidator.validate(configuration, paths: paths))
     }
 
+    func testDeleteRequiringUploadRequiresStorage() throws {
+        let paths = try ApplicationPaths()
+        var configuration = ShotdConfiguration()
+        configuration.source.retention = .deleteAfterSuccess
+        configuration.source.deleteRequiresUpload = true
+        XCTAssertThrowsError(try ConfigValidator.validate(configuration, paths: paths))
+    }
+
+    func testOutputDestinationsDoNotOverwriteExistingFiles() throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let output = OutputManager(directory: directory)
+        let source = URL(filePath: "/tmp/capture.png")
+        let format = OutputFormat(fileExtension: "webp", mimeType: "image/webp")
+        let first = output.destination(for: source, format: format)
+        let second = output.destination(for: source, format: format)
+
+        XCTAssertNotEqual(first, second)
+        XCTAssertTrue(first.lastPathComponent.hasPrefix("capture-"))
+        XCTAssertEqual(first.pathExtension, "webp")
+    }
+
     func testWatchAndOutputDirectoriesCannotOverlap() throws {
         let paths = try ApplicationPaths()
         var configuration = ShotdConfiguration()
