@@ -1,7 +1,7 @@
 import Foundation
 
 public enum BuildInfo {
-    public static let version = "v2026.09.15"
+    public static let version = "v2026.09.16"
     public static let repository = "Harsh-2002/shotd"
 
     public static func isNewer(_ candidate: String, than current: String = version) -> Bool {
